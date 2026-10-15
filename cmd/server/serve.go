@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 
 	"github.com/i-got-this-faa/fbs/internal/config"
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 )
 
 // serve runs the HTTP server until it fails or ctx is done, then shuts it
@@ -19,11 +21,16 @@ func serve(ctx context.Context, cfg config.Config, handler http.Handler, logger 
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
+		ConnContext:  httpapi.WriteTimeoutConnContext,
+	}
+	listener, err := net.Listen("tcp", cfg.HTTPAddr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.ListenAndServe()
+		errCh <- srv.Serve(httpapi.NewWriteTimeoutListener(listener))
 	}()
 	logger.Info(
 		"starting server",

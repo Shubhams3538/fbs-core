@@ -62,6 +62,7 @@ func newApp(cfg config.Config, db *sql.DB, store storage.DiskEngine, logger *slo
 			Storage:          store,
 			Logger:           logger,
 			S3CacheControl:   cfg.S3CacheControl,
+			WriteTimeout:     cfg.WriteTimeout,
 			PublicReadSigner: publicReadSigner,
 			MultipartUploads: multipartRepo,
 			ShareLinks:       shareLinkRepo,

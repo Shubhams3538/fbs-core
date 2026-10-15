@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/iam"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 	"github.com/i-got-this-faa/fbs/internal/storage"
@@ -45,6 +46,11 @@ func (h *ObjectHandlers) serveObject(w http.ResponseWriter, r *http.Request, obj
 		return
 	}
 	defer file.Close()
+
+	if err := httpapi.EnableWriteIdleTimeout(r, h.WriteTimeout); err != nil {
+		mapReadError(w, r, h, fmt.Errorf("set object write timeout: %w", err), obj)
+		return
+	}
 
 	setObjectHeaders(w, obj, cacheControl, responseContentDisposition)
 	http.ServeContent(w, r, obj.Key, obj.UpdatedAt.UTC(), file)
