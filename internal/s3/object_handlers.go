@@ -34,6 +34,7 @@ type ObjectHandlers struct {
 	NewID            func() string
 	Logger           *slog.Logger
 	S3CacheControl   string
+	WriteTimeout     time.Duration // zero leaves the server's write deadline unchanged
 	PublicReadSigner *publicread.Signer
 	ShareLinks       metadata.ShareLinkRepository
 	MinPartSize      int64 // zero means default 5 MiB

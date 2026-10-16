@@ -37,7 +37,7 @@ Configuration is loaded from environment variables and then overridden by comman
 | `FBS_PUBLIC_READ_MAX_TTL` | `--public-read-max-ttl` | Maximum TTL allowed when generating public object URLs. |
 | `FBS_CORS_ALLOWED_ORIGINS` | `--cors-allowed-origins` | Comma-separated allowed browser origins. |
 | `FBS_READ_TIMEOUT` | `--read-timeout` | HTTP server read timeout. |
-| `FBS_WRITE_TIMEOUT` | `--write-timeout` | HTTP server write timeout. |
+| `FBS_WRITE_TIMEOUT` | `--write-timeout` | Total HTTP response write deadline; socket progress timeout for object downloads. See transfer timeout policy below. |
 | `FBS_IDLE_TIMEOUT` | `--idle-timeout` | HTTP server idle timeout. |
 | `FBS_SHUTDOWN_TIMEOUT` | `--shutdown-timeout` | Graceful shutdown timeout. |
 | `FBS_MULTIPART_TTL` | `--multipart-ttl` | Age after which active multipart uploads become stale. |
@@ -57,6 +57,44 @@ The server refuses to start when:
 - Multipart TTL is non-positive.
 - Multipart cleanup interval is below `1m`.
 - Dev mode is enabled while binding to anything other than `127.0.0.1`, `localhost`, or `::1`.
+
+## Transfer Timeout Policy
+
+`FBS_WRITE_TIMEOUT` defaults to `30s`. Ordinary responses retain the HTTP
+server's total write deadline. Once an object has been authorized and opened,
+the built-in HTTP server switches authenticated reads, signed public reads,
+and share link reads to a socket progress timeout. This includes full GETs,
+single ranges, and multipart range responses. Each socket write gets a fresh
+deadline. If a write times out after sending some bytes, the server renews
+the deadline and continues from the unsent bytes. If a timeout reports no
+progress, the transfer ends and releases the handler. A partial write can
+therefore take longer than the timeout without requiring a minimum rate for
+completing a fixed-size chunk. Buffered progress can delay detection of a
+stalled reader until a subsequent timeout reports no bytes sent.
+
+Progress means bytes accepted by the server's socket, not bytes read by the
+client application. TCP buffering and receive-window updates can pause
+observable writes even while the client drains buffered data. Choose a timeout
+longer than the expected network pauses; very small values can interrupt slow
+clients. The default remains `30s`.
+
+File transfers retain the standard library's optimized `ReadFrom`/`sendfile`
+path where supported. Retried transfers preserve file offsets and range
+limits, including when the operating system falls back to buffered copying.
+HEAD and conditional responses retain `http.ServeContent` behavior. Requests
+that fail authentication or object lookup retain the ordinary deadline. The
+server resets the connection policy between requests, so keep-alive does not
+carry a download's timeout behavior into later responses.
+
+This policy is installed by the built-in HTTP/1 server's listener and request
+connection context. Embedding the handlers in a different server does not
+install it automatically. TLS and HTTP/2 termination at a reverse proxy is
+independent of the backend connection's timeout policy.
+
+`FBS_IDLE_TIMEOUT` controls idle keep-alive connections between requests; it
+does not control an active download. Reverse proxies can impose their own
+timeouts and buffering. Configure them to allow long transfers and preserve
+range requests and object headers.
 
 ## CORS
 
