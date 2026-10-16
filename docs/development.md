@@ -74,9 +74,11 @@ python3 scripts/verify-test-regressions.py
 ```
 
 The script first checks that each focused test passes, then uses temporary Go
-overlays to reject five known regressions: a migration that rejects member users,
-a missing production `WWW-Authenticate` header, a rewritten middleware error,
-a masked SigV4 chain error, and an exposed internal auth error.
+overlays to reject 22 known regressions across authentication, request framing,
+transaction cleanup, cache publication and memory accounting, legacy multipart
+upgrades, Unicode listings, published checksum vectors, conditional writes,
+deactivation, backing-file deletion, process isolation, setup access, configuration,
+and graceful shutdown.
 It succeeds only when the intended test assertion catches each mutation, and it
 leaves source files unchanged. The normal suite must also pass:
 
@@ -84,6 +86,23 @@ leaves source files unchanged. The normal suite must also pass:
 go test ./... -count=1
 go test -race ./... -count=1
 ```
+
+The process test launcher strips inherited `FBS_*` variables and gives each child
+its own working directory. Supply configuration overrides explicitly; never run
+startup reconciliation against a developer's inherited data directory.
+
+For an isolated HTTP proof against the normal compiled server:
+
+```bash
+python3 scripts/prove-production-audit.py
+# or: python3 scripts/prove-production-audit.py --binary /path/to/fbs
+```
+
+It checks 19 outcomes, including preserved bytes after rejected conditional
+writes, the AWS CRC64-NVME vector, Unicode listings, bounded control bodies, and
+active/inactive member authentication. It prints no credentials, uses temporary
+data, and shuts its child server down before returning. The CI `regression-proof`
+job runs both scripts and uploads their output as `production-regression-proof`.
 
 ### External S3 compatibility suite (ceph/s3-tests)
 

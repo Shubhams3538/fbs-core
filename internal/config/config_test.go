@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,6 +74,7 @@ func TestBoolFromEnvStrict(t *testing.T) {
 }
 
 func TestLoad_DevFlag(t *testing.T) {
+	isolateConfigEnv(t)
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 
@@ -90,6 +93,7 @@ func TestLoad_DevFlag(t *testing.T) {
 }
 
 func TestLoad_DevFlagRejectsNonLoopback(t *testing.T) {
+	isolateConfigEnv(t)
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 
@@ -102,6 +106,7 @@ func TestLoad_DevFlagRejectsNonLoopback(t *testing.T) {
 }
 
 func TestLoad_DevEnvVar(t *testing.T) {
+	isolateConfigEnv(t)
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 
@@ -118,6 +123,7 @@ func TestLoad_DevEnvVar(t *testing.T) {
 }
 
 func TestLoad_DevEnvVarInvalid(t *testing.T) {
+	isolateConfigEnv(t)
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 
@@ -131,6 +137,7 @@ func TestLoad_DevEnvVarInvalid(t *testing.T) {
 }
 
 func TestLoad_FlagOverridesEnv(t *testing.T) {
+	isolateConfigEnv(t)
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 
@@ -152,6 +159,19 @@ func TestConfigValidationRejectsInvalidFields(t *testing.T) {
 		change func(*Config)
 	}{
 		{"zero read timeout", func(cfg *Config) { cfg.ReadTimeout = 0 }},
+		{"negative read timeout", func(cfg *Config) { cfg.ReadTimeout = -time.Second }},
+		{"zero write timeout", func(cfg *Config) { cfg.WriteTimeout = 0 }},
+		{"negative write timeout", func(cfg *Config) { cfg.WriteTimeout = -time.Second }},
+		{"zero idle timeout", func(cfg *Config) { cfg.IdleTimeout = 0 }},
+		{"negative idle timeout", func(cfg *Config) { cfg.IdleTimeout = -time.Second }},
+		{"zero shutdown timeout", func(cfg *Config) { cfg.ShutdownTimeout = 0 }},
+		{"negative shutdown timeout", func(cfg *Config) { cfg.ShutdownTimeout = -time.Second }},
+		{"negative metadata cache", func(cfg *Config) { cfg.MetadataCacheSizeBytes = -1 }},
+		{"zero multipart TTL", func(cfg *Config) { cfg.MultipartTTL = 0 }},
+		{"negative multipart TTL", func(cfg *Config) { cfg.MultipartTTL = -time.Second }},
+		{"zero cleanup interval", func(cfg *Config) { cfg.MultipartCleanupInterval = 0 }},
+		{"negative cleanup interval", func(cfg *Config) { cfg.MultipartCleanupInterval = -time.Minute }},
+		{"cleanup interval below minimum", func(cfg *Config) { cfg.MultipartCleanupInterval = time.Minute - time.Nanosecond }},
 		{"empty HTTP address", func(cfg *Config) { cfg.HTTPAddr = "" }},
 		{"empty database path", func(cfg *Config) { cfg.DBPath = "" }},
 		{"empty data directory", func(cfg *Config) { cfg.DataDir = "" }},
@@ -296,6 +316,7 @@ func TestEnvOrDefault(t *testing.T) {
 }
 
 func TestFlagSetErrorPropagates(t *testing.T) {
+	isolateConfigEnv(t)
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
 
@@ -303,5 +324,100 @@ func TestFlagSetErrorPropagates(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for invalid flag")
+	}
+}
+
+func isolateConfigEnv(t *testing.T) {
+	t.Helper()
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "FBS_") {
+			// Setenv records the inherited value for restoration at cleanup.
+			t.Setenv(key, "")
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestLoadWiresEnvironmentAndFlags(t *testing.T) {
+	for _, source := range []string{"environment", "flags override environment"} {
+		t.Run(source, func(t *testing.T) {
+			isolateConfigEnv(t)
+			oldArgs := os.Args
+			t.Cleanup(func() { os.Args = oldArgs })
+			os.Args = []string{"fbs"}
+			settings := []struct{ env, flag, value string }{
+				{"FBS_HTTP_ADDR", "http-addr", "127.0.0.1:9123"},
+				{"FBS_DB_PATH", "db-path", "/tmp/config-wiring.db"},
+				{"FBS_DATA_DIR", "data-dir", "/tmp/config-wiring-data"},
+				{"FBS_PUBLIC_BASE_URL", "public-base-url", "https://files.example.test"},
+				{"FBS_READ_TIMEOUT", "read-timeout", "11s"},
+				{"FBS_WRITE_TIMEOUT", "write-timeout", "22s"},
+				{"FBS_IDLE_TIMEOUT", "idle-timeout", "33s"},
+				{"FBS_SHUTDOWN_TIMEOUT", "shutdown-timeout", "44s"},
+				{"FBS_MULTIPART_TTL", "multipart-ttl", "5h"},
+				{"FBS_MULTIPART_CLEANUP_INTERVAL", "multipart-cleanup-interval", "6m"},
+				{"FBS_METADATA_CACHE_SIZE", "metadata-cache-size", "7MiB"},
+				{"FBS_S3_CACHE_CONTROL", "s3-cache-control", "private, max-age=123"},
+				{"FBS_PUBLIC_READ_SIGNING_SECRET", "public-read-signing-secret", strings.Repeat("s", 32)},
+				{"FBS_PUBLIC_READ_DEFAULT_TTL", "public-read-default-ttl", "8m"},
+				{"FBS_PUBLIC_READ_MAX_TTL", "public-read-max-ttl", "9h"},
+				{"FBS_CORS_ALLOWED_ORIGINS", "cors-allowed-origins", "https://app.example.test,https://admin.example.test"},
+			}
+			for _, setting := range settings {
+				t.Setenv(setting.env, setting.value)
+				if source == "flags override environment" {
+					os.Args = append(os.Args, "--"+setting.flag, setting.value)
+					// Distinct, valid environment defaults expose ignored flags.
+					switch setting.env {
+					case "FBS_METADATA_CACHE_SIZE":
+						t.Setenv(setting.env, "1MiB")
+					case "FBS_PUBLIC_READ_SIGNING_SECRET":
+						t.Setenv(setting.env, strings.Repeat("e", 32))
+					default:
+						if strings.HasSuffix(setting.env, "TIMEOUT") || strings.HasSuffix(setting.env, "TTL") || strings.HasSuffix(setting.env, "INTERVAL") {
+							t.Setenv(setting.env, "1m")
+						} else {
+							t.Setenv(setting.env, "")
+						}
+					}
+				}
+			}
+			got, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := Default()
+			want.HTTPAddr = "127.0.0.1:9123"
+			want.DBPath = "/tmp/config-wiring.db"
+			want.DataDir = "/tmp/config-wiring-data"
+			want.PublicBaseURL = "https://files.example.test"
+			want.ReadTimeout = 11 * time.Second
+			want.WriteTimeout = 22 * time.Second
+			want.IdleTimeout = 33 * time.Second
+			want.ShutdownTimeout = 44 * time.Second
+			want.MultipartTTL = 5 * time.Hour
+			want.MultipartCleanupInterval = 6 * time.Minute
+			want.MetadataCacheSizeBytes = 7 * 1024 * 1024
+			want.S3CacheControl = "private, max-age=123"
+			want.PublicReadSigningSecret = strings.Repeat("s", 32)
+			want.PublicReadDefaultTTL = 8 * time.Minute
+			want.PublicReadMaxTTL = 9 * time.Hour
+			want.CORSAllowedOrigins = []string{"https://app.example.test", "https://admin.example.test"}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("Load() = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestConfigValidationAcceptsCacheAndCleanupBounds(t *testing.T) {
+	cfg := Default()
+	cfg.MetadataCacheSizeBytes = 0
+	cfg.MultipartCleanupInterval = time.Minute
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("zero cache and minimum cleanup interval: %v", err)
 	}
 }

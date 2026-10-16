@@ -79,3 +79,34 @@ jobs:
             echo "$unreachable"
             exit 1
           fi
+
+  regression-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Prove regression sensitivity
+        shell: bash
+        run: python3 scripts/verify-test-regressions.py | tee regression-sensitivity.log
+
+      - name: Prove compiled-server HTTP behavior
+        shell: bash
+        run: python3 scripts/prove-production-audit.py | tee production-http-proof.json
+
+      - name: Save proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-regression-proof
+          path: |
+            regression-sensitivity.log
+            production-http-proof.json

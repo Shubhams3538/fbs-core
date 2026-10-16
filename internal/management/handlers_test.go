@@ -5,11 +5,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,6 +107,7 @@ func TestManagementDeleteBucketRemovesObjects(t *testing.T) {
 	t.Parallel()
 
 	env := newManagementTestEnv(t)
+	storedFiles := seedBucketCleanupFiles(t, env)
 
 	resp := env.do(t, http.MethodDelete, "/api/management/buckets/photos", env.adminToken, nil)
 	defer resp.Body.Close()
@@ -119,6 +122,11 @@ func TestManagementDeleteBucketRemovesObjects(t *testing.T) {
 
 	if _, err := metadata.NewObjectRepository(env.db).GetByKey(context.Background(), "photos", "2026/image.jpg"); !errorsIsObjectNotFound(err) {
 		t.Fatalf("deleted object lookup error = %v, want ErrObjectNotFound", err)
+	}
+	for _, path := range storedFiles {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("deleted bucket backing file %q: stat error = %v, want os.ErrNotExist", path, err)
+		}
 	}
 
 	missing := env.do(t, http.MethodDelete, "/api/management/buckets/photos", env.adminToken, nil)
@@ -160,6 +168,7 @@ func TestManagementEmptyBucketRemovesObjectsButKeepsBucket(t *testing.T) {
 	t.Parallel()
 
 	env := newManagementTestEnv(t)
+	storedFiles := seedBucketCleanupFiles(t, env)
 	resp := env.do(t, http.MethodPost, "/api/management/buckets/photos/empty", env.adminToken, nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
@@ -174,6 +183,11 @@ func TestManagementEmptyBucketRemovesObjectsButKeepsBucket(t *testing.T) {
 	}
 	if truncated || len(objects) != 0 {
 		t.Fatalf("objects = %v truncated=%v, want empty", objects, truncated)
+	}
+	for _, path := range storedFiles {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("emptied bucket backing file %q: stat error = %v, want os.ErrNotExist", path, err)
+		}
 	}
 }
 
@@ -452,17 +466,39 @@ func TestManagementPatchKeyDeactivatePreventsBearerAuthentication(t *testing.T) 
 	t.Parallel()
 
 	env := newManagementTestEnv(t)
+	checkMemberAccess := func(phase string, wantStatus int) {
+		t.Helper()
+		for _, method := range []string{"bearer", "sigv4"} {
+			t.Run(phase+"/"+method, func(t *testing.T) {
+				var resp *http.Response
+				if method == "bearer" {
+					resp = env.do(t, http.MethodGet, "/api/management/grants/me", env.memberToken, nil)
+				} else {
+					resp = env.doSigV4(t, http.MethodGet, "/api/management/grants/me", env.memberSigV4, env.memberSigV4.SecretKey)
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != wantStatus {
+					t.Fatalf("member status = %d, want %d", resp.StatusCode, wantStatus)
+				}
+			})
+		}
+	}
+	checkMemberAccess("active", http.StatusOK)
+
 	resp := env.do(t, http.MethodPatch, "/api/management/keys/"+env.memberUserID, env.adminToken, strings.NewReader(`{"is_active":false}`))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
 	}
 
-	member := env.do(t, http.MethodGet, "/api/management/metrics", env.memberToken, nil)
-	defer member.Body.Close()
-	if member.StatusCode != http.StatusForbidden {
-		t.Fatalf("inactive member status = %d, want 403", member.StatusCode)
+	user, err := metadata.NewUserRepository(env.db).GetByID(context.Background(), env.memberUserID)
+	if err != nil {
+		t.Fatalf("load deactivated member: %v", err)
 	}
+	if user.IsActive {
+		t.Error("stored member is still active after deactivation")
+	}
+	checkMemberAccess("inactive", http.StatusForbidden)
 }
 
 func TestManagementPatchKeyInvalidPayloads(t *testing.T) {

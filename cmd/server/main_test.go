@@ -1,228 +1,22 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/i-got-this-faa/fbs/internal/auth"
-	"github.com/i-got-this-faa/fbs/internal/metadata"
 )
 
-func buildServerBinary(t *testing.T) string {
-	t.Helper()
-
-	binPath := filepath.Join(t.TempDir(), "fbs-server")
-	cmd := exec.Command("go", "build", "-o", binPath, ".")
-	cmd.Env = os.Environ()
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to build server binary: %v\noutput:\n%s", err, string(out))
-	}
-	return binPath
-}
-
-func buildServerBinaryWithTestEndpoints(t *testing.T) string {
-	t.Helper()
-
-	binPath := filepath.Join(t.TempDir(), "fbs-server-testendpoints")
-	cmd := exec.Command("go", "build", "-tags", "testendpoints", "-o", binPath, ".")
-	cmd.Env = os.Environ()
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to build server binary with testendpoints tag: %v\noutput:\n%s", err, string(out))
-	}
-	return binPath
-}
-
-func TestServerGracefulShutdown(t *testing.T) {
-	binPath := buildServerBinary(t)
-
-	cmd := exec.Command(binPath)
-	cmd.Dir = t.TempDir()
-	cmd.Env = append(os.Environ(),
-		"HTTP_ADDR=127.0.0.1:0",
-		"FBS_HTTP_ADDR=127.0.0.1:0",
-		"SHUTDOWN_TIMEOUT=1s",
-		"FBS_SHUTDOWN_TIMEOUT=1s",
-	)
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var stdoutBuf bytes.Buffer
-	var stderrBuf bytes.Buffer
-	started := make(chan struct{})
-
-	go func() {
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			line := scanner.Text()
-			stdoutBuf.WriteString(line)
-			stdoutBuf.WriteByte('\n')
-			if strings.Contains(line, "starting server") {
-				select {
-				case <-started:
-				default:
-					close(started)
-				}
-			}
-		}
-	}()
-
-	go func() {
-		_, _ = io.Copy(&stderrBuf, stderrPipe)
-	}()
-
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("server did not start in time; stdout=%q stderr=%q", stdoutBuf.String(), stderrBuf.String())
-	}
-
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("server exited with error: %v\nstdout=%q\nstderr=%q", err, stdoutBuf.String(), stderrBuf.String())
-		}
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("server did not exit after SIGTERM; stdout=%q stderr=%q", stdoutBuf.String(), stderrBuf.String())
-	}
-
-	if !strings.Contains(stdoutBuf.String(), "shutting down server") {
-		t.Fatalf("expected shutdown log; stdout=%q stderr=%q", stdoutBuf.String(), stderrBuf.String())
-	}
-}
-
-func findFreePort(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("find free port: %v", err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-	return addr
-}
-
-func startTestServer(t *testing.T, extraEnv ...string) (cmd *exec.Cmd, baseURL string, shutdown func()) {
-	t.Helper()
-
-	binPath := buildServerBinaryWithTestEndpoints(t)
-	workDir := t.TempDir()
-	addr := findFreePort(t)
-	baseURL = "http://" + addr
-
-	cmd = exec.Command(binPath)
-	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(),
-		"FBS_HTTP_ADDR="+addr,
-		"FBS_SHUTDOWN_TIMEOUT=1s",
-	)
-	cmd.Env = append(cmd.Env, extraEnv...)
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var stdoutBuf bytes.Buffer
-	var stderrBuf bytes.Buffer
-	started := make(chan struct{})
-
-	go func() {
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			line := scanner.Text()
-			stdoutBuf.WriteString(line)
-			stdoutBuf.WriteByte('\n')
-			if strings.Contains(line, "starting server") {
-				select {
-				case <-started:
-				default:
-					close(started)
-				}
-			}
-		}
-	}()
-
-	go func() {
-		_, _ = io.Copy(&stderrBuf, stderrPipe)
-	}()
-
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("server did not start in time; stdout=%q stderr=%q", stdoutBuf.String(), stderrBuf.String())
-	}
-
-	// Give the server a moment to actually bind
-	time.Sleep(100 * time.Millisecond)
-
-	shutdown = func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan error, 1)
-		go func() {
-			done <- cmd.Wait()
-		}()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = cmd.Process.Kill()
-		}
-	}
-
-	return cmd, baseURL, shutdown
-}
-
 func TestServerAuth_DevModeBypass(t *testing.T) {
-	_, baseURL, shutdown := startTestServer(t, "FBS_DEV=true")
-	defer shutdown()
+	server := startTestServer(t, "FBS_DEV=true")
+	baseURL := server.baseURL
 
-	resp, err := http.Get(baseURL + "/_health/auth")
+	resp, err := server.client.Get(baseURL + "/_health/auth")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -249,10 +43,10 @@ func TestServerAuth_DevModeBypass(t *testing.T) {
 }
 
 func TestServerAuth_ProtectedRouteRequiresAuth(t *testing.T) {
-	_, baseURL, shutdown := startTestServer(t)
-	defer shutdown()
+	server := startTestServer(t)
+	baseURL := server.baseURL
 
-	resp, err := http.Get(baseURL + "/_health/auth")
+	resp, err := server.client.Get(baseURL + "/_health/auth")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -269,48 +63,15 @@ func TestServerAuth_ProtectedRouteRequiresAuth(t *testing.T) {
 }
 
 func TestServerAuth_BearerToken(t *testing.T) {
-	workDir := t.TempDir()
-	dbPath := filepath.Join(workDir, "test.db")
+	dbPath, issued, _, user := seedServerCredentials(t, "member")
 
-	db, err := metadata.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-
-	issued, err := auth.IssueBearerToken()
-	if err != nil {
-		t.Fatalf("issue token: %v", err)
-	}
-
-	sigv4, err := auth.IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-test",
-		DisplayName:      "Test User",
-		AccessKeyID:      issued.AccessKeyID,
-		SecretHash:       issued.SecretHash,
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := metadata.NewUserRepository(db).Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-	db.Close()
-
-	_, baseURL, shutdown := startTestServer(t, "FBS_DB_PATH="+dbPath)
-	defer shutdown()
+	server := startTestServer(t, "FBS_DB_PATH="+dbPath)
+	baseURL := server.baseURL
 
 	req, _ := http.NewRequest(http.MethodGet, baseURL+"/_health/auth", nil)
 	req.Header.Set("Authorization", "Bearer "+issued.RawToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.client.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -325,8 +86,8 @@ func TestServerAuth_BearerToken(t *testing.T) {
 		t.Fatalf("decode failed: %v", err)
 	}
 
-	if body["user_id"] != "user-test" {
-		t.Errorf("user_id = %q, want user-test", body["user_id"])
+	if body["user_id"] != user.ID {
+		t.Errorf("user_id = %q, want %q", body["user_id"], user.ID)
 	}
 	if body["role"] != "member" {
 		t.Errorf("role = %q, want member", body["role"])
@@ -337,13 +98,13 @@ func TestServerAuth_BearerToken(t *testing.T) {
 }
 
 func TestServerAuth_UnsupportedScheme(t *testing.T) {
-	_, baseURL, shutdown := startTestServer(t)
-	defer shutdown()
+	server := startTestServer(t)
+	baseURL := server.baseURL
 
 	req, _ := http.NewRequest(http.MethodGet, baseURL+"/_health/auth", nil)
 	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.client.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -359,45 +120,17 @@ func TestServerAuth_UnsupportedScheme(t *testing.T) {
 }
 
 func TestServerAuth_SigV4(t *testing.T) {
-	workDir := t.TempDir()
-	dbPath := filepath.Join(workDir, "test.db")
+	dbPath, _, sigv4, user := seedServerCredentials(t, "admin")
 
-	db, err := metadata.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-
-	sigv4, err := auth.IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-sigv4",
-		DisplayName:      "SigV4 Test User",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "admin",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := metadata.NewUserRepository(db).Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-	db.Close()
-
-	_, baseURL, shutdown := startTestServer(t, "FBS_DB_PATH="+dbPath)
-	defer shutdown()
+	server := startTestServer(t, "FBS_DB_PATH="+dbPath)
+	baseURL := server.baseURL
 
 	req, _ := http.NewRequest(http.MethodGet, baseURL+"/_health/auth", nil)
 	req.Host = strings.TrimPrefix(baseURL, "http://")
 
 	auth.SignRequest(req, sigv4.AccessKeyID, sigv4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, auth.EmptyStringHash)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.client.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -412,8 +145,8 @@ func TestServerAuth_SigV4(t *testing.T) {
 		t.Fatalf("decode failed: %v", err)
 	}
 
-	if body["user_id"] != "user-sigv4" {
-		t.Errorf("user_id = %q, want user-sigv4", body["user_id"])
+	if body["user_id"] != user.ID {
+		t.Errorf("user_id = %q, want %q", body["user_id"], user.ID)
 	}
 	if body["role"] != "admin" {
 		t.Errorf("role = %q, want admin", body["role"])
@@ -424,45 +157,17 @@ func TestServerAuth_SigV4(t *testing.T) {
 }
 
 func TestServerAuth_SigV4WrongSignature(t *testing.T) {
-	workDir := t.TempDir()
-	dbPath := filepath.Join(workDir, "test.db")
+	dbPath, _, sigv4, _ := seedServerCredentials(t, "member")
 
-	db, err := metadata.Open(dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-
-	sigv4, err := auth.IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-sigv4-wrong",
-		DisplayName:      "SigV4 Wrong",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := metadata.NewUserRepository(db).Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-	db.Close()
-
-	_, baseURL, shutdown := startTestServer(t, "FBS_DB_PATH="+dbPath)
-	defer shutdown()
+	server := startTestServer(t, "FBS_DB_PATH="+dbPath)
+	baseURL := server.baseURL
 
 	req, _ := http.NewRequest(http.MethodGet, baseURL+"/_health/auth", nil)
 	req.Host = strings.TrimPrefix(baseURL, "http://")
 
 	auth.SignRequest(req, sigv4.AccessKeyID, "wrong-secret", "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, auth.EmptyStringHash)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.client.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -477,10 +182,10 @@ func TestServerSetupBootstrapCredentialsAccessManagement(t *testing.T) {
 	workDir := t.TempDir()
 	dbPath := filepath.Join(workDir, "test.db")
 
-	_, baseURL, shutdown := startTestServer(t, "FBS_DB_PATH="+dbPath)
-	defer shutdown()
+	server := startTestServer(t, "FBS_DB_PATH="+dbPath)
+	baseURL := server.baseURL
 
-	statusResp, err := http.Get(baseURL + "/api/setup/status")
+	statusResp, err := server.client.Get(baseURL + "/api/setup/status")
 	if err != nil {
 		t.Fatalf("status request failed: %v", err)
 	}
@@ -504,7 +209,7 @@ func TestServerSetupBootstrapCredentialsAccessManagement(t *testing.T) {
 		t.Fatalf("region = %q, want us-east-1", statusBody.Region)
 	}
 
-	bootstrapResp, err := http.Post(baseURL+"/api/setup/bootstrap", "application/json", strings.NewReader(`{"display_name":"Admin User"}`))
+	bootstrapResp, err := server.client.Post(baseURL+"/api/setup/bootstrap", "application/json", strings.NewReader(`{"display_name":"Admin User"}`))
 	if err != nil {
 		t.Fatalf("bootstrap request failed: %v", err)
 	}
@@ -550,7 +255,7 @@ func TestServerSetupBootstrapCredentialsAccessManagement(t *testing.T) {
 
 	bearerReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/management/metrics", nil)
 	bearerReq.Header.Set("Authorization", "Bearer "+bootstrapBody.BearerToken)
-	bearerResp, err := http.DefaultClient.Do(bearerReq)
+	bearerResp, err := server.client.Do(bearerReq)
 	if err != nil {
 		t.Fatalf("bearer metrics request failed: %v", err)
 	}
@@ -562,7 +267,7 @@ func TestServerSetupBootstrapCredentialsAccessManagement(t *testing.T) {
 	sigV4Req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/management/metrics", nil)
 	sigV4Req.Host = strings.TrimPrefix(baseURL, "http://")
 	auth.SignRequest(sigV4Req, bootstrapBody.SigV4.AccessKeyID, bootstrapBody.SigV4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, auth.EmptyStringHash)
-	sigV4Resp, err := http.DefaultClient.Do(sigV4Req)
+	sigV4Resp, err := server.client.Do(sigV4Req)
 	if err != nil {
 		t.Fatalf("sigv4 metrics request failed: %v", err)
 	}
@@ -571,7 +276,7 @@ func TestServerSetupBootstrapCredentialsAccessManagement(t *testing.T) {
 		t.Fatalf("sigv4 metrics code = %d, want 200", sigV4Resp.StatusCode)
 	}
 
-	secondResp, err := http.Post(baseURL+"/api/setup/bootstrap", "application/json", strings.NewReader(`{}`))
+	secondResp, err := server.client.Post(baseURL+"/api/setup/bootstrap", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatalf("second bootstrap request failed: %v", err)
 	}
@@ -582,6 +287,59 @@ func TestServerSetupBootstrapCredentialsAccessManagement(t *testing.T) {
 }
 
 func TestServerStartsWithWhitespacePublicReadSigningSecret(t *testing.T) {
-	_, _, shutdown := startTestServer(t, "FBS_PUBLIC_READ_SIGNING_SECRET=   ")
-	defer shutdown()
+	startTestServer(t, "FBS_PUBLIC_READ_SIGNING_SECRET=   ")
+}
+
+func TestServerGracefulShutdown(t *testing.T) {
+	server := launchTestServer(t, buildServerBinary(t))
+	if err := server.waitReady(); err != nil {
+		t.Fatalf("readiness: %v; stdout=%s stderr=%s", err, server.stdout.String(), server.stderr.String())
+	}
+	server.stop(t)
+	if !strings.Contains(server.stdout.String(), "shutting down server") {
+		t.Fatalf("missing shutdown log: %s", server.stdout.String())
+	}
+}
+
+func TestServerProcessIgnoresInheritedStorageAndAuth(t *testing.T) {
+	inherited := t.TempDir()
+	dataDir := filepath.Join(inherited, "data")
+	sentinel := filepath.Join(dataDir, "owned-bucket", "sentinel")
+	if err := os.MkdirAll(filepath.Dir(sentinel), 0700); err != nil {
+		t.Fatal(err)
+	}
+	const contents = "test-owned data must survive startup reconciliation"
+	if err := os.WriteFile(sentinel, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A valid empty DB would let startup reconcile away the orphan sentinel.
+	dbPath, _, _, _ := seedServerCredentials(t, "admin")
+	before, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FBS_DATA_DIR", dataDir)
+	t.Setenv("FBS_DB_PATH", dbPath)
+	t.Setenv("FBS_DEV", "true")
+	server := startTestServer(t)
+	resp, err := server.client.Get(server.baseURL + "/_health/auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("inherited dev mode leaked: status=%d", resp.StatusCode)
+	}
+	server.stop(t)
+	for path, want := range map[string]string{sentinel: contents, dbPath: string(before)} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Errorf("inherited file %s changed: read error=%v, contents equal=%v", path, err, string(got) == want)
+		}
+	}
+	for _, name := range []string{"fbs.db", "data"} {
+		if _, err := os.Stat(filepath.Join(server.cmd.Dir, name)); err != nil {
+			t.Errorf("server did not create isolated %s: %v", name, err)
+		}
+	}
 }

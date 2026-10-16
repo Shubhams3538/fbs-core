@@ -91,6 +91,102 @@ def main():
         "response exposes the private authentication cause",
     )
 
+    verify_regression(
+        "canceled transaction cleanup", "internal/metadata/transaction.go",
+        "if !tx.committed {", "if false {", "./internal/metadata",
+        "^TestImmediateTransactionRollbackSurvivesCancellation$", "canceled transaction committed",
+    )
+    verify_regression(
+        "cache publication ordering", "internal/metadata/cache.go",
+        "c.revision++", "// missing publication invalidation", "./internal/metadata",
+        "^TestCacheMissCannotResurrectCommittedObjectVersion$", "stale cached object",
+    )
+    verify_regression(
+        "cache metadata budget", "internal/metadata/cache.go",
+        "size += 64 + int64(len(key)+len(value))", "size += int64(len(key)) + 0*int64(len(value))",
+        "./internal/metadata", "^TestCacheBudgetIncludesUserMetadataAndChecksums$",
+        "metadata larger than whole budget retained",
+    )
+    verify_regression(
+        "cache metadata copy isolation", "internal/metadata/cache.go",
+        "copied.UserMetadata = maps.Clone(object.UserMetadata)",
+        "if false { copied.UserMetadata = maps.Clone(object.UserMetadata) }",
+        "./internal/metadata", "^TestCachedObjectMetadataIsAnIndependentCopy$",
+        "cache aliases caller metadata",
+    )
+    verify_regression(
+        "legacy multipart NULL upgrade", "internal/metadata/multipart.go",
+        "&checksumAlgorithm, &metaStr)", "&u.ChecksumAlgorithm, &metaStr)",
+        "./internal/metadata", "^TestLegacyMultipartUpgradeRemainsReadable$",
+        "converting NULL to string is unsupported",
+    )
+    verify_regression(
+        "Unicode prefix listing", "internal/metadata/objects.go",
+        "prefixLen := utf8.RuneCountInString(prefix)",
+        "prefixLen := len(prefix); _ = utf8.RuneCountInString(prefix)",
+        "./internal/metadata", "^TestDelimitedListingUnicodePrefixesAndDelimiters$", "entries=",
+    )
+    verify_regression(
+        "published CRC64-NVME answers", "internal/s3/checksum.go",
+        "crc64.MakeTable(0x9a6c9329ac4bc9b5)", "crc64.MakeTable(0xad93d23594c93659)",
+        "./internal/s3", "^TestCRC64NVMEKnownAnswers$", "CRC64-NVME =",
+    )
+    verify_regression(
+        "atomic destination write conditions", "internal/metadata/object_replace.go",
+        "checkWritePreconditions(existing, ifMatch, ifNoneMatch)",
+        'checkWritePreconditions(existing, "", "")',
+        "./internal/s3", "^TestObjectWritesEnforceDestinationPreconditions$", "status=200 want=412",
+    )
+    verify_regression(
+        "member deactivation", "internal/management/keys.go",
+        "user.IsActive = *req.isActive", "user.IsActive = true",
+        "./internal/management", "^TestManagementPatchKeyDeactivatePreventsBearerAuthentication$",
+        "stored member is still active",
+    )
+    verify_regression(
+        "real bucket backing-file deletion", "internal/objectops/cleanup.go",
+        "if disk != nil {", "if false && disk != nil {",
+        "./internal/management", "^TestManagement(DeleteBucket|EmptyBucket)RemovesObjects", "backing file",
+    )
+    verify_regression(
+        "setup status peer restriction", "internal/setup/handlers.go",
+        "if !isLoopbackRequest(r) {", "if false && !isLoopbackRequest(r) {",
+        "./internal/setup", "^TestSetupRoutesRequireLoopbackPeer$", "want 403",
+    )
+    verify_regression(
+        "inherited process configuration isolation", "cmd/server/process_test_helpers_test.go",
+        'if !strings.HasPrefix(entry, "FBS_") {', 'if true {',
+        "./cmd/server", "^TestServerProcessIgnoresInheritedStorageAndAuth$", "inherited",
+    )
+    verify_regression(
+        "real in-flight shutdown drain", "cmd/server/serve.go",
+        "srv.Shutdown(shutdownCtx)", "func() error { _ = shutdownCtx; return srv.Close() }()",
+        "./cmd/server", "^TestServeShutdownWaitsForInflightRequest$", "serve returned with an in-flight request",
+    )
+
+    verify_regression(
+        "bounded body reader", "internal/http/request_body.go",
+        "http.MaxBytesReader(w, r.Body, limit)", "io.LimitReader(r.Body, limit)",
+        "./internal/http", "^TestReadBodyEnforcesExactLimit$", "want MaxBytesError",
+    )
+    verify_regression(
+        "single JSON document", "internal/http/request_body.go",
+        "if err := decoder.Decode(&extra); err != io.EOF {",
+        "if err := decoder.Decode(&extra); false && err != io.EOF {",
+        "./internal/http", "^TestDecodeJSONBodyFramingAndOptions$", "wantErr=true",
+    )
+    verify_regression(
+        "Bearer scheme detection", "internal/auth/bearer.go",
+        'if len(parts) > 0 && !strings.EqualFold(parts[0], "Bearer") {',
+        'if false && len(parts) > 0 && !strings.EqualFold(parts[0], "Bearer") {',
+        "./internal/auth", "^TestChainPreservesSigV4Failure$", "chain error =",
+    )
+    verify_regression(
+        "configured response write timeout", "internal/config/config.go",
+        "WriteTimeout:             writeTimeout,", "WriteTimeout:             defaults.WriteTimeout,",
+        "./internal/config", "^TestLoadWiresEnvironmentAndFlags$", "Load() =",
+    )
+
 
 if __name__ == "__main__":
     main()
