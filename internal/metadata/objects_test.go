@@ -2,48 +2,11 @@ package metadata
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 	"time"
 	"uuid"
 )
-
-const createObjectsTable = `
-CREATE TABLE IF NOT EXISTS objects (
-    id             TEXT PRIMARY KEY,
-    bucket_name    TEXT NOT NULL REFERENCES buckets(name),
-    key            TEXT NOT NULL,
-    size           INTEGER NOT NULL,
-    etag           TEXT NOT NULL,
-    content_type   TEXT NOT NULL DEFAULT 'application/octet-stream',
-    storage_path   TEXT NOT NULL,
-    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    is_multipart   INTEGER NOT NULL DEFAULT 0,
-    parts_count    INTEGER NOT NULL DEFAULT 0,
-    checksum_crc32 TEXT,
-    checksum_crc32c TEXT,
-    checksum_crc64nvme TEXT,
-    checksum_sha1 TEXT,
-    checksum_sha256 TEXT,
-    user_metadata  TEXT,
-    UNIQUE(bucket_name, key)
-);
-CREATE INDEX IF NOT EXISTS idx_objects_bucket_prefix ON objects(bucket_name, key);
-`
-
-func openTestDBWithObjects(t *testing.T) *sql.DB {
-	t.Helper()
-
-	db := openTestDBWithBuckets(t) // creates users and buckets tables
-
-	if _, err := db.Exec(createObjectsTable); err != nil {
-		t.Fatalf("create objects table: %v", err)
-	}
-
-	return db
-}
 
 func newTestObject(bucketName, key string) *Object {
 	return &Object{
@@ -60,7 +23,7 @@ func newTestObject(bucketName, key string) *Object {
 }
 
 func TestObjectCreateAndGet(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -82,7 +45,7 @@ func TestObjectCreateAndGet(t *testing.T) {
 }
 
 func TestObjectUpsert(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -121,7 +84,7 @@ func TestObjectUpsert(t *testing.T) {
 }
 
 func TestObjectDelete(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -142,7 +105,7 @@ func TestObjectDelete(t *testing.T) {
 }
 
 func TestObjectDeleteAllInBucket(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -163,7 +126,7 @@ func TestObjectDeleteAllInBucket(t *testing.T) {
 }
 
 func TestObjectList(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -219,7 +182,7 @@ func TestObjectList(t *testing.T) {
 }
 
 func TestObjectList_PrefixWithWildcards(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -255,7 +218,7 @@ func TestObjectList_PrefixWithWildcards(t *testing.T) {
 }
 
 func TestObjectListDelimited(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -293,7 +256,7 @@ func TestObjectListDelimited(t *testing.T) {
 }
 
 func TestObjectListDelimited_Pagination(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -334,7 +297,7 @@ func TestObjectListDelimited_Pagination(t *testing.T) {
 }
 
 func TestObjectListDelimited_WithPrefix(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 
@@ -364,7 +327,7 @@ func TestObjectListDelimited_WithPrefix(t *testing.T) {
 }
 
 func TestObjectListDelimited_MaxKeysZero(t *testing.T) {
-	db := openTestDBWithObjects(t)
+	db := openTestDB(t)
 	repo := NewObjectRepository(db)
 	ctx := context.Background()
 

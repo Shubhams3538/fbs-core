@@ -3,7 +3,6 @@ package metadata
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 	"uuid"
@@ -12,11 +11,7 @@ import (
 func TestManagementRepositoryMetrics(t *testing.T) {
 	t.Parallel()
 
-	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	seedManagementRepositoryData(t, ctx, db)
@@ -46,11 +41,7 @@ func TestManagementRepositoryMetrics(t *testing.T) {
 func TestManagementRepositoryListBucketSummaries(t *testing.T) {
 	t.Parallel()
 
-	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	seedManagementRepositoryData(t, ctx, db)
@@ -80,11 +71,7 @@ func TestManagementRepositoryListBucketSummaries(t *testing.T) {
 func TestManagementRepositoryGetBucketSummary(t *testing.T) {
 	t.Parallel()
 
-	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	seedManagementRepositoryData(t, ctx, db)
@@ -105,11 +92,7 @@ func TestManagementRepositoryGetBucketSummary(t *testing.T) {
 func TestActivityRepositoryCreateAndList(t *testing.T) {
 	t.Parallel()
 
-	db, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	repo := NewActivityRepository(db)

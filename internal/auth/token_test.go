@@ -19,9 +19,6 @@ func TestIssueBearerToken(t *testing.T) {
 		t.Fatalf("IssueBearerToken() error = %v", err)
 	}
 
-	if issued.AccessKeyID == "" {
-		t.Error("AccessKeyID is empty")
-	}
 	if !strings.HasPrefix(issued.AccessKeyID, tokenPrefix) {
 		t.Errorf("AccessKeyID %q does not have expected prefix", issued.AccessKeyID)
 	}
@@ -32,10 +29,6 @@ func TestIssueBearerToken(t *testing.T) {
 	}
 	if parts[0] != issued.AccessKeyID {
 		t.Errorf("raw token prefix %q != AccessKeyID %q", parts[0], issued.AccessKeyID)
-	}
-
-	if issued.SecretHash == "" {
-		t.Error("SecretHash is empty")
 	}
 
 	expectedHash := sha256.Sum256([]byte(parts[1]))
@@ -53,9 +46,6 @@ func TestIssueSigV4Credentials(t *testing.T) {
 		t.Fatalf("IssueSigV4Credentials() error = %v", err)
 	}
 
-	if creds.AccessKeyID == "" {
-		t.Error("AccessKeyID is empty")
-	}
 	if !strings.HasPrefix(creds.AccessKeyID, sigV4Prefix) {
 		t.Errorf("AccessKeyID %q does not have expected prefix", creds.AccessKeyID)
 	}
@@ -147,9 +137,6 @@ func TestCreateBearerTokenPersistsActiveUser(t *testing.T) {
 	}
 	if strings.Contains(stored.SecretHash, issued.RawToken) {
 		t.Error("stored hash should not contain raw token")
-	}
-	if sigv4Creds.AccessKeyID == "" {
-		t.Error("expected returned SigV4 AccessKeyID to be non-empty")
 	}
 	if sigv4Creds.SecretKey == "" {
 		t.Error("expected returned SigV4 SecretKey to be non-empty")

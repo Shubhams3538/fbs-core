@@ -484,27 +484,6 @@ func TestGetObjectNoSuchKey(t *testing.T) {
 	assertS3ErrorCode(t, resp.Body.Bytes(), codeNoSuchKey)
 }
 
-func TestHeadObject(t *testing.T) {
-	t.Parallel()
-
-	env := newObjectTestEnv(t)
-	env.mustPut(t, "head.txt", "head body")
-
-	resp := env.do(t, http.MethodHead, "/"+env.bucket+"/head.txt", "", nil)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", resp.Code, resp.Body.String())
-	}
-	if resp.Body.Len() != 0 {
-		t.Fatalf("HEAD body length = %d, want 0", resp.Body.Len())
-	}
-	if got := resp.Header().Get("ETag"); got == "" {
-		t.Fatal("expected ETag header")
-	}
-	if got := resp.Header().Get("Cache-Control"); got != config.Default().S3CacheControl {
-		t.Fatalf("Cache-Control = %q, want %q", got, config.Default().S3CacheControl)
-	}
-}
-
 func TestHeadObjectMatchesGetHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -513,7 +492,19 @@ func TestHeadObjectMatchesGetHeaders(t *testing.T) {
 
 	getResp := env.do(t, http.MethodGet, "/"+env.bucket+"/head-headers.txt", "", nil)
 	headResp := env.do(t, http.MethodHead, "/"+env.bucket+"/head-headers.txt", "", nil)
-	for _, header := range []string{"ETag", "Content-Type", "Last-Modified", "Cache-Control"} {
+	if getResp.Code != http.StatusOK || headResp.Code != http.StatusOK {
+		t.Fatalf("GET/HEAD status = %d/%d, want 200/200", getResp.Code, headResp.Code)
+	}
+	if got := headResp.Header().Get("Cache-Control"); got != config.Default().S3CacheControl {
+		t.Fatalf("Cache-Control = %q, want %q", got, config.Default().S3CacheControl)
+	}
+	if got := headResp.Header().Get("Content-Length"); got != "9" {
+		t.Fatalf("Content-Length = %q, want 9", got)
+	}
+	for _, header := range []string{"ETag", "Content-Type", "Last-Modified", "Cache-Control", "Content-Length"} {
+		if getResp.Header().Get(header) == "" {
+			t.Fatalf("GET %s must not be empty", header)
+		}
 		if got, want := headResp.Header().Get(header), getResp.Header().Get(header); got != want {
 			t.Fatalf("HEAD %s = %q, want GET value %q", header, got, want)
 		}

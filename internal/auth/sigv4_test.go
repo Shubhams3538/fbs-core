@@ -1,16 +1,139 @@
 package auth
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 )
+
+func presignedQuery(user *metadata.User, signedAt time.Time) url.Values {
+	return url.Values{
+		"X-Amz-Algorithm":     {sigV4Algorithm},
+		"X-Amz-Credential":    {user.SigV4AccessKeyID + "/" + signedAt.Format("20060102") + "/us-east-1/s3/aws4_request"},
+		"X-Amz-Date":          {signedAt.Format("20060102T150405Z")},
+		"X-Amz-Expires":       {"3600"},
+		"X-Amz-SignedHeaders": {"host"},
+	}
+}
+
+// Sign exactly the supplied query, including deliberately missing or duplicate values.
+func signPresignedQuery(req *http.Request, secretKey string, signedAt time.Time, q url.Values) {
+	req.URL.RawQuery = q.Encode()
+	canonicalRequest := buildCanonicalRequestForQuery(req, q.Get("X-Amz-SignedHeaders"), unsignedPayload)
+	stringToSign := buildStringToSign(q.Get("X-Amz-Date"), q.Get("X-Amz-Credential"), canonicalRequest)
+	q.Set("X-Amz-Signature", computeSignature(secretKey, signedAt.Format("20060102"), "us-east-1", "s3", stringToSign))
+	req.URL.RawQuery = q.Encode()
+}
+
+func TestSigV4AuthQueryString(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.October, 16, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		offset time.Duration
+		query  url.Values
+		want   error
+	}{
+		{name: "valid"},
+		{name: "older_than_clock_skew_within_expiry", offset: -30 * time.Minute},
+		{name: "expired", offset: -2 * time.Hour, query: url.Values{"X-Amz-Expires": {"60"}}, want: ErrInvalidCredentials},
+		{name: "maximum_ttl", query: url.Values{"X-Amz-Expires": {"604800"}}},
+		{name: "expires_at_now", offset: -time.Hour},
+		{name: "past_expiry", offset: -time.Hour - time.Second, want: ErrInvalidCredentials},
+		{name: "older_than_seven_days", offset: -7*24*time.Hour - time.Second, query: url.Values{"X-Amz-Expires": {"604800"}}, want: ErrInvalidCredentials},
+		{name: "future_within_skew", offset: 15 * time.Minute},
+		{name: "future_beyond_skew", offset: 15*time.Minute + time.Second, want: ErrInvalidCredentials},
+		{name: "missing_algorithm", query: url.Values{"X-Amz-Algorithm": nil}, want: ErrNotApplicable},
+		{name: "wrong_algorithm", query: url.Values{"X-Amz-Algorithm": {"AWS4-HMAC-SHA1"}}, want: ErrMalformedToken},
+		{name: "missing_credential", query: url.Values{"X-Amz-Credential": nil}, want: ErrMalformedToken},
+		{name: "missing_date", query: url.Values{"X-Amz-Date": nil}, want: ErrMalformedToken},
+		{name: "malformed_date", query: url.Values{"X-Amz-Date": {"not-a-date"}}, want: ErrMalformedToken},
+		{name: "credential_date_mismatch", query: url.Values{"X-Amz-Date": {"20261015T120000Z"}}, want: ErrInvalidCredentials},
+		{name: "malformed_credential", query: url.Values{"X-Amz-Credential": {"bad"}}, want: ErrMalformedToken},
+		{name: "missing_expires", offset: -20 * time.Minute, query: url.Values{"X-Amz-Expires": nil}, want: ErrMalformedToken},
+		{name: "zero_expires", query: url.Values{"X-Amz-Expires": {"0"}}, want: ErrMalformedToken},
+		{name: "negative_expires", query: url.Values{"X-Amz-Expires": {"-1"}}, want: ErrMalformedToken},
+		{name: "nonnumeric_expires", query: url.Values{"X-Amz-Expires": {"tomorrow"}}, want: ErrMalformedToken},
+		{name: "expires_too_large", query: url.Values{"X-Amz-Expires": {"604801"}}, want: ErrMalformedToken},
+		{name: "missing_signed_headers", query: url.Values{"X-Amz-SignedHeaders": nil}, want: ErrMalformedToken},
+		{name: "missing_host_in_signed_headers", query: url.Values{"X-Amz-SignedHeaders": {"x-amz-content-sha256"}}, want: ErrMalformedToken},
+		{name: "signed_duplicate_query_values", query: url.Values{"partNumber": {"2", "1"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, cleanup := setupTestDB(t)
+			defer cleanup()
+			user, _ := createTestUser(t, metadata.NewUserRepository(db), "Query User", "member", true)
+			auth := &SigV4Authenticator{Repo: metadata.NewSigV4UserRepository(db), Now: func() time.Time { return now }}
+			signedAt := now.Add(tt.offset)
+			q := presignedQuery(user, signedAt)
+			for key, values := range tt.query {
+				q[key] = values
+			}
+			req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
+			req.Host = "localhost:9000"
+			signPresignedQuery(req, user.SigV4SecretKey, signedAt, q)
+
+			p, err := auth.Authenticate(req)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Authenticate() error = %v, want %v", err, tt.want)
+			}
+			if tt.want == nil && p.UserID != user.ID {
+				t.Errorf("UserID = %q, want %q", p.UserID, user.ID)
+			}
+		})
+	}
+}
+
+func TestSigV4AuthQueryStringTampered(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(url.Values)
+		want   error
+	}{
+		{"missing_signature", func(q url.Values) { q.Del("X-Amz-Signature") }, ErrMalformedToken},
+		{"nonhex_signature", func(q url.Values) { q.Set("X-Amz-Signature", "not-hex") }, ErrInvalidCredentials},
+		{"short_signature", func(q url.Values) { q.Set("X-Amz-Signature", "abc") }, ErrInvalidCredentials},
+		{"wrong_signature", func(q url.Values) { q.Set("X-Amz-Signature", strings.Repeat("0", 64)) }, ErrInvalidCredentials},
+		{"duplicate_expires", func(q url.Values) { q.Add("X-Amz-Expires", "7200") }, ErrInvalidCredentials},
+		{"duplicate_application_parameter", func(q url.Values) { q.Add("partNumber", "2") }, ErrInvalidCredentials},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, cleanup := setupTestDB(t)
+			defer cleanup()
+			user, _ := createTestUser(t, metadata.NewUserRepository(db), "Tampered Query", "member", true)
+			auth := &SigV4Authenticator{Repo: metadata.NewSigV4UserRepository(db)}
+			now := time.Now().UTC()
+			q := presignedQuery(user, now)
+			q.Set("partNumber", "1")
+			req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
+			req.Host = "localhost:9000"
+			signPresignedQuery(req, user.SigV4SecretKey, now, q)
+
+			tt.mutate(q)
+			req.URL.RawQuery = q.Encode()
+			if _, err := auth.Authenticate(req); !errors.Is(err, tt.want) {
+				t.Fatalf("Authenticate() error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
 
 func TestSigV4AuthSuccess(t *testing.T) {
 	t.Parallel()
@@ -20,32 +143,13 @@ func TestSigV4AuthSuccess(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-sigv4",
-		DisplayName:      "SigV4 User",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "admin",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "SigV4 User", "admin", true)
 
 	auth := &SigV4Authenticator{Repo: sigv4Repo}
 	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
 	req.Host = "localhost:9000"
 
-	SignRequest(req, sigv4.AccessKeyID, sigv4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
+	SignRequest(req, user.SigV4AccessKeyID, user.SigV4SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
 
 	p, err := auth.Authenticate(req)
 	if err != nil {
@@ -136,34 +240,15 @@ func TestSigV4AuthInactiveUser(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-inactive",
-		DisplayName:      "Inactive",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         false,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "Inactive", "member", false)
 
 	auth := &SigV4Authenticator{Repo: sigv4Repo}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9000"
 
-	SignRequest(req, sigv4.AccessKeyID, sigv4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
+	SignRequest(req, user.SigV4AccessKeyID, user.SigV4SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
 
-	_, err = auth.Authenticate(req)
+	_, err := auth.Authenticate(req)
 	if err != ErrInactiveUser {
 		t.Fatalf("expected ErrInactiveUser, got %v", err)
 	}
@@ -177,34 +262,15 @@ func TestSigV4AuthWrongSignature(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-wrong",
-		DisplayName:      "Wrong Secret",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "Wrong Secret", "member", true)
 
 	auth := &SigV4Authenticator{Repo: sigv4Repo}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9000"
 
-	SignRequest(req, sigv4.AccessKeyID, "wrong-secret", "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
+	SignRequest(req, user.SigV4AccessKeyID, "wrong-secret", "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
 
-	_, err = auth.Authenticate(req)
+	_, err := auth.Authenticate(req)
 	if err != ErrInvalidCredentials {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -218,26 +284,7 @@ func TestSigV4AuthClockSkew(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-skew",
-		DisplayName:      "Skew Test",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "Skew Test", "member", true)
 
 	// Request signed 20 minutes ago
 	past := time.Now().UTC().Add(-20 * time.Minute)
@@ -245,138 +292,11 @@ func TestSigV4AuthClockSkew(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9000"
 
-	SignRequestAt(req, sigv4.AccessKeyID, sigv4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash, past)
+	SignRequestAt(req, user.SigV4AccessKeyID, user.SigV4SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash, past)
 
-	_, err = auth.Authenticate(req)
+	_, err := auth.Authenticate(req)
 	if err != ErrInvalidCredentials {
 		t.Fatalf("expected ErrInvalidCredentials for clock skew, got %v", err)
-	}
-}
-
-func TestSigV4AuthQueryString(t *testing.T) {
-	t.Parallel()
-
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	repo := metadata.NewUserRepository(db)
-	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-query",
-		DisplayName:      "Query User",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	auth := &SigV4Authenticator{Repo: sigv4Repo}
-	now := time.Now().UTC()
-	timestamp := now.Format("20060102T150405Z")
-	date := now.Format("20060102")
-	credential := sigv4.AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
-	signedHeaders := "host"
-
-	// Build a presigned URL manually
-	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
-	req.Host = "localhost:9000"
-	req.Header.Set("Host", req.Host)
-
-	// Set query params before computing signature so canonical query string is correct
-	q := req.URL.Query()
-	q.Set("X-Amz-Algorithm", sigV4Algorithm)
-	q.Set("X-Amz-Credential", credential)
-	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-Expires", "3600")
-	q.Set("X-Amz-SignedHeaders", signedHeaders)
-	req.URL.RawQuery = q.Encode()
-
-	canonicalRequest := buildCanonicalRequestForQuery(req, signedHeaders, unsignedPayload)
-	stringToSign := buildStringToSign(timestamp, credential, canonicalRequest)
-	signature := computeSignature(sigv4.SecretKey, date, "us-east-1", "s3", stringToSign)
-
-	q.Set("X-Amz-Signature", signature)
-	req.URL.RawQuery = q.Encode()
-
-	p, err := auth.Authenticate(req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if p.UserID != user.ID {
-		t.Errorf("UserID = %q, want %q", p.UserID, user.ID)
-	}
-}
-
-func TestSigV4AuthQueryStringExpired(t *testing.T) {
-	t.Parallel()
-
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	repo := metadata.NewUserRepository(db)
-	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-expired",
-		DisplayName:      "Expired",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	auth := &SigV4Authenticator{Repo: sigv4Repo, Now: time.Now().UTC}
-	past := time.Now().UTC().Add(-2 * time.Hour)
-	timestamp := past.Format("20060102T150405Z")
-	date := past.Format("20060102")
-	credential := sigv4.AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
-	signedHeaders := "host"
-
-	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
-	req.Host = "localhost:9000"
-	req.Header.Set("Host", req.Host)
-
-	q := req.URL.Query()
-	q.Set("X-Amz-Algorithm", sigV4Algorithm)
-	q.Set("X-Amz-Credential", credential)
-	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-Expires", "60") // 60 seconds, but signed 2 hours ago
-	q.Set("X-Amz-SignedHeaders", signedHeaders)
-	req.URL.RawQuery = q.Encode()
-
-	canonicalRequest := buildCanonicalRequestForQuery(req, signedHeaders, unsignedPayload)
-	stringToSign := buildStringToSign(timestamp, credential, canonicalRequest)
-	signature := computeSignature(sigv4.SecretKey, date, "us-east-1", "s3", stringToSign)
-
-	q.Set("X-Amz-Signature", signature)
-	req.URL.RawQuery = q.Encode()
-
-	_, err = auth.Authenticate(req)
-	if err != ErrInvalidCredentials {
-		t.Fatalf("expected ErrInvalidCredentials for expired URL, got %v", err)
 	}
 }
 
@@ -406,26 +326,7 @@ func TestSigV4ChainAuthenticator(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-chain",
-		DisplayName:      "Chain User",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "admin",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "Chain User", "admin", true)
 
 	chain := &ChainAuthenticator{
 		Authenticators: []Authenticator{
@@ -437,7 +338,7 @@ func TestSigV4ChainAuthenticator(t *testing.T) {
 	// Test that a SigV4 request succeeds through the chain
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9000"
-	SignRequest(req, sigv4.AccessKeyID, sigv4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
+	SignRequest(req, user.SigV4AccessKeyID, user.SigV4SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
 
 	p, err := chain.Authenticate(req)
 	if err != nil {
@@ -477,106 +378,6 @@ func TestSigV4ChainAuthenticator_BearerFirst(t *testing.T) {
 	}
 }
 
-func TestSigV4ChainAuthenticator_NoApplicableAuth(t *testing.T) {
-	t.Parallel()
-
-	chain := &ChainAuthenticator{
-		Authenticators: []Authenticator{
-			&BearerAuthenticator{},
-			&SigV4Authenticator{},
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	_, err := chain.Authenticate(req)
-	if err != ErrMissingAuth {
-		t.Fatalf("expected ErrMissingAuth, got %v", err)
-	}
-}
-
-func TestSigV4ChainAuthenticator_UnsupportedScheme(t *testing.T) {
-	t.Parallel()
-
-	chain := &ChainAuthenticator{
-		Authenticators: []Authenticator{
-			&BearerAuthenticator{},
-			&SigV4Authenticator{},
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
-
-	_, err := chain.Authenticate(req)
-	if err != ErrUnsupportedScheme {
-		t.Fatalf("expected ErrUnsupportedScheme, got %v", err)
-	}
-}
-
-func TestSigV4AuthQueryStringOlderThanClockSkewButWithinExpiry(t *testing.T) {
-	t.Parallel()
-
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	repo := metadata.NewUserRepository(db)
-	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-old-query",
-		DisplayName:      "Old Query",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	auth := &SigV4Authenticator{Repo: sigv4Repo, Now: time.Now().UTC}
-	past := time.Now().UTC().Add(-30 * time.Minute)
-	timestamp := past.Format("20060102T150405Z")
-	date := past.Format("20060102")
-	credential := sigv4.AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
-	signedHeaders := "host"
-
-	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
-	req.Host = "localhost:9000"
-	req.Header.Set("Host", req.Host)
-
-	q := req.URL.Query()
-	q.Set("X-Amz-Algorithm", sigV4Algorithm)
-	q.Set("X-Amz-Credential", credential)
-	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-Expires", "3600") // 1 hour, signed 30 minutes ago
-	q.Set("X-Amz-SignedHeaders", signedHeaders)
-	req.URL.RawQuery = q.Encode()
-
-	canonicalRequest := buildCanonicalRequestForQuery(req, signedHeaders, unsignedPayload)
-	stringToSign := buildStringToSign(timestamp, credential, canonicalRequest)
-	signature := computeSignature(sigv4.SecretKey, date, "us-east-1", "s3", stringToSign)
-
-	q.Set("X-Amz-Signature", signature)
-	req.URL.RawQuery = q.Encode()
-
-	p, err := auth.Authenticate(req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if p.UserID != user.ID {
-		t.Errorf("UserID = %q, want %q", p.UserID, user.ID)
-	}
-}
-
 func TestSigV4AuthHeaderWithoutCommaSpace(t *testing.T) {
 	t.Parallel()
 
@@ -585,33 +386,14 @@ func TestSigV4AuthHeaderWithoutCommaSpace(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-nospace",
-		DisplayName:      "No Space",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "admin",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "No Space", "admin", true)
 
 	auth := &SigV4Authenticator{Repo: sigv4Repo}
 	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
 	req.Host = "localhost:9000"
 
 	// Sign normally, then rewrite the header to remove spaces after commas
-	SignRequest(req, sigv4.AccessKeyID, sigv4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
+	SignRequest(req, user.SigV4AccessKeyID, user.SigV4SecretKey, "us-east-1", "s3", []string{"host", "x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
 	authHeader := req.Header.Get("Authorization")
 	authHeader = strings.ReplaceAll(authHeader, ", ", ",")
 	req.Header.Set("Authorization", authHeader)
@@ -633,26 +415,7 @@ func TestSigV4AuthHeaderWithDateFallback(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-date-fallback",
-		DisplayName:      "Date Fallback",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "admin",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "Date Fallback", "admin", true)
 
 	auth := &SigV4Authenticator{Repo: sigv4Repo}
 	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
@@ -670,9 +433,9 @@ func TestSigV4AuthHeaderWithDateFallback(t *testing.T) {
 
 	signedHeadersStr := "date;host;x-amz-content-sha256"
 	canonicalRequest := buildCanonicalRequest(req, signedHeadersStr, EmptyStringHash)
-	credential := sigv4.AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
+	credential := user.SigV4AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
 	stringToSign := buildStringToSign(timestamp, credential, canonicalRequest)
-	signature := computeSignature(sigv4.SecretKey, date, "us-east-1", "s3", stringToSign)
+	signature := computeSignature(user.SigV4SecretKey, date, "us-east-1", "s3", stringToSign)
 
 	authHeader := sigV4Algorithm +
 		" Credential=" + credential +
@@ -689,189 +452,6 @@ func TestSigV4AuthHeaderWithDateFallback(t *testing.T) {
 	}
 }
 
-func TestSigV4AuthQueryStringMissingExpires(t *testing.T) {
-	t.Parallel()
-
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	repo := metadata.NewUserRepository(db)
-	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-no-expires",
-		DisplayName:      "No Expires",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	auth := &SigV4Authenticator{Repo: sigv4Repo, Now: time.Now().UTC}
-	past := time.Now().UTC().Add(-20 * time.Minute)
-	timestamp := past.Format("20060102T150405Z")
-	date := past.Format("20060102")
-	credential := sigv4.AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
-	signedHeaders := "host"
-
-	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
-	req.Host = "localhost:9000"
-	req.Header.Set("Host", req.Host)
-
-	q := req.URL.Query()
-	q.Set("X-Amz-Algorithm", sigV4Algorithm)
-	q.Set("X-Amz-Credential", credential)
-	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-SignedHeaders", signedHeaders)
-	// Intentionally omit X-Amz-Expires — should be rejected as malformed
-	req.URL.RawQuery = q.Encode()
-
-	canonicalRequest := buildCanonicalRequestForQuery(req, signedHeaders, unsignedPayload)
-	stringToSign := buildStringToSign(timestamp, credential, canonicalRequest)
-	signature := computeSignature(sigv4.SecretKey, date, "us-east-1", "s3", stringToSign)
-
-	q.Set("X-Amz-Signature", signature)
-	req.URL.RawQuery = q.Encode()
-
-	_, err = auth.Authenticate(req)
-	if err != ErrMalformedToken {
-		t.Fatalf("expected ErrMalformedToken for missing X-Amz-Expires, got %v", err)
-	}
-}
-
-func TestSigV4AuthQueryStringExpiresTooLarge(t *testing.T) {
-	t.Parallel()
-
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	repo := metadata.NewUserRepository(db)
-	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-expires-large",
-		DisplayName:      "Expires Too Large",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	auth := &SigV4Authenticator{Repo: sigv4Repo}
-	now := time.Now().UTC()
-	timestamp := now.Format("20060102T150405Z")
-	date := now.Format("20060102")
-	credential := sigv4.AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
-	signedHeaders := "host"
-
-	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
-	req.Host = "localhost:9000"
-	req.Header.Set("Host", req.Host)
-
-	q := req.URL.Query()
-	q.Set("X-Amz-Algorithm", sigV4Algorithm)
-	q.Set("X-Amz-Credential", credential)
-	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-Expires", "604801") // 1 second over 7 days
-	q.Set("X-Amz-SignedHeaders", signedHeaders)
-	req.URL.RawQuery = q.Encode()
-
-	canonicalRequest := buildCanonicalRequestForQuery(req, signedHeaders, unsignedPayload)
-	stringToSign := buildStringToSign(timestamp, credential, canonicalRequest)
-	signature := computeSignature(sigv4.SecretKey, date, "us-east-1", "s3", stringToSign)
-
-	q.Set("X-Amz-Signature", signature)
-	req.URL.RawQuery = q.Encode()
-
-	_, err = auth.Authenticate(req)
-	if err != ErrMalformedToken {
-		t.Fatalf("expected ErrMalformedToken for X-Amz-Expires > 604800, got %v", err)
-	}
-}
-
-func TestSigV4AuthQueryStringFutureDate(t *testing.T) {
-	t.Parallel()
-
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	repo := metadata.NewUserRepository(db)
-	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-future",
-		DisplayName:      "Future Date",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	auth := &SigV4Authenticator{Repo: sigv4Repo, Now: time.Now().UTC}
-	future := time.Now().UTC().Add(30 * time.Minute)
-	timestamp := future.Format("20060102T150405Z")
-	date := future.Format("20060102")
-	credential := sigv4.AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
-	signedHeaders := "host"
-
-	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
-	req.Host = "localhost:9000"
-	req.Header.Set("Host", req.Host)
-
-	q := req.URL.Query()
-	q.Set("X-Amz-Algorithm", sigV4Algorithm)
-	q.Set("X-Amz-Credential", credential)
-	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-Expires", "3600")
-	q.Set("X-Amz-SignedHeaders", signedHeaders)
-	req.URL.RawQuery = q.Encode()
-
-	canonicalRequest := buildCanonicalRequestForQuery(req, signedHeaders, unsignedPayload)
-	stringToSign := buildStringToSign(timestamp, credential, canonicalRequest)
-	signature := computeSignature(sigv4.SecretKey, date, "us-east-1", "s3", stringToSign)
-
-	q.Set("X-Amz-Signature", signature)
-	req.URL.RawQuery = q.Encode()
-
-	_, err = auth.Authenticate(req)
-	if err != ErrInvalidCredentials {
-		t.Fatalf("expected ErrInvalidCredentials for future timestamp, got %v", err)
-	}
-}
-
 func TestSigV4AuthMissingHostInSignedHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -880,96 +460,16 @@ func TestSigV4AuthMissingHostInSignedHeaders(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-no-host",
-		DisplayName:      "No Host",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "admin",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "No Host", "admin", true)
 
 	auth := &SigV4Authenticator{Repo: sigv4Repo}
 	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
 	req.Host = "localhost:9000"
 
 	// Sign with a SignedHeaders list that deliberately omits "host"
-	SignRequest(req, sigv4.AccessKeyID, sigv4.SecretKey, "us-east-1", "s3", []string{"x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
+	SignRequest(req, user.SigV4AccessKeyID, user.SigV4SecretKey, "us-east-1", "s3", []string{"x-amz-content-sha256", "x-amz-date"}, EmptyStringHash)
 
-	_, err = auth.Authenticate(req)
-	if err != ErrMalformedToken {
-		t.Fatalf("expected ErrMalformedToken for missing host in SignedHeaders, got %v", err)
-	}
-}
-
-func TestSigV4AuthQueryStringMissingHostInSignedHeaders(t *testing.T) {
-	t.Parallel()
-
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	repo := metadata.NewUserRepository(db)
-	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-query-no-host",
-		DisplayName:      "Query No Host",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "member",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	auth := &SigV4Authenticator{Repo: sigv4Repo}
-	now := time.Now().UTC()
-	timestamp := now.Format("20060102T150405Z")
-	date := now.Format("20060102")
-	credential := sigv4.AccessKeyID + "/" + date + "/us-east-1/s3/aws4_request"
-	signedHeaders := "x-amz-content-sha256" // deliberately omits "host"
-
-	req := httptest.NewRequest(http.MethodGet, "/test-bucket/hello.txt", nil)
-	req.Host = "localhost:9000"
-	req.Header.Set("Host", req.Host)
-
-	q := req.URL.Query()
-	q.Set("X-Amz-Algorithm", sigV4Algorithm)
-	q.Set("X-Amz-Credential", credential)
-	q.Set("X-Amz-Date", timestamp)
-	q.Set("X-Amz-Expires", "3600")
-	q.Set("X-Amz-SignedHeaders", signedHeaders)
-	req.URL.RawQuery = q.Encode()
-
-	canonicalRequest := buildCanonicalRequestForQuery(req, signedHeaders, unsignedPayload)
-	stringToSign := buildStringToSign(timestamp, credential, canonicalRequest)
-	signature := computeSignature(sigv4.SecretKey, date, "us-east-1", "s3", stringToSign)
-
-	q.Set("X-Amz-Signature", signature)
-	req.URL.RawQuery = q.Encode()
-
-	_, err = auth.Authenticate(req)
+	_, err := auth.Authenticate(req)
 	if err != ErrMalformedToken {
 		t.Fatalf("expected ErrMalformedToken for missing host in SignedHeaders, got %v", err)
 	}
@@ -983,26 +483,7 @@ func TestSigV4AuthInvalidCredentialScope(t *testing.T) {
 
 	repo := metadata.NewUserRepository(db)
 	sigv4Repo := metadata.NewSigV4UserRepository(db)
-	sigv4, err := IssueSigV4Credentials()
-	if err != nil {
-		t.Fatalf("issue sigv4 credentials: %v", err)
-	}
-
-	user := &metadata.User{
-		ID:               "user-scope",
-		DisplayName:      "Scope Test",
-		AccessKeyID:      "bearer_ignored",
-		SecretHash:       "hash_ignored",
-		SigV4AccessKeyID: sigv4.AccessKeyID,
-		SigV4SecretKey:   sigv4.SecretKey,
-		Role:             "admin",
-		IsActive:         true,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
-	}
-	if err := repo.Create(context.Background(), user); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	user, _ := createTestUser(t, repo, "Scope Test", "admin", true)
 
 	auth := &SigV4Authenticator{Repo: sigv4Repo}
 	now := time.Now().UTC()
@@ -1014,10 +495,10 @@ func TestSigV4AuthInvalidCredentialScope(t *testing.T) {
 		credential string
 	}{
 		{"empty_access_key", "/" + date + "/us-east-1/s3/aws4_request"},
-		{"bad_date_length", sigv4.AccessKeyID + "/" + date + "01/us-east-1/s3/aws4_request"},
-		{"bad_date_chars", sigv4.AccessKeyID + "/abcdefgh/us-east-1/s3/aws4_request"},
-		{"empty_region", sigv4.AccessKeyID + "/" + date + "//s3/aws4_request"},
-		{"non_s3_service", sigv4.AccessKeyID + "/" + date + "/us-east-1/ec2/aws4_request"},
+		{"bad_date_length", user.SigV4AccessKeyID + "/" + date + "01/us-east-1/s3/aws4_request"},
+		{"bad_date_chars", user.SigV4AccessKeyID + "/abcdefgh/us-east-1/s3/aws4_request"},
+		{"empty_region", user.SigV4AccessKeyID + "/" + date + "//s3/aws4_request"},
+		{"non_s3_service", user.SigV4AccessKeyID + "/" + date + "/us-east-1/ec2/aws4_request"},
 	}
 
 	for _, tc := range tests {

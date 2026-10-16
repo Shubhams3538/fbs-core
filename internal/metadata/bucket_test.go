@@ -9,33 +9,6 @@ import (
 	"uuid"
 )
 
-// createBucketsTable is the DDL for the buckets table used in bucket tests.
-// The users table is also required because owner_id is a foreign key.
-const createBucketsTable = `
-CREATE TABLE IF NOT EXISTS buckets (
-    name       TEXT PRIMARY KEY,
-    owner_id   TEXT NOT NULL REFERENCES users(id),
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);`
-
-// openTestDBWithBuckets opens an in-memory SQLite DB with both users and buckets tables
-// and enables foreign key enforcement.
-func openTestDBWithBuckets(t *testing.T) *sql.DB {
-	t.Helper()
-
-	db := openTestDB(t) // creates the users table
-
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		t.Fatalf("enable foreign_keys: %v", err)
-	}
-
-	if _, err := db.Exec(createBucketsTable); err != nil {
-		t.Fatalf("create buckets table: %v", err)
-	}
-
-	return db
-}
-
 // insertTestUser inserts a minimal user row so bucket foreign-key constraints pass.
 func insertTestUser(t *testing.T, db *sql.DB) string {
 	t.Helper()
@@ -58,21 +31,8 @@ func newTestBucket(ownerID string) *Bucket {
 	}
 }
 
-func TestBucketCreate(t *testing.T) {
-	db := openTestDBWithBuckets(t)
-	repo := NewBucketRepository(db)
-	ctx := context.Background()
-
-	ownerID := insertTestUser(t, db)
-	b := newTestBucket(ownerID)
-
-	if err := repo.Create(ctx, b); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-}
-
 func TestBucketCreate_DuplicateName(t *testing.T) {
-	db := openTestDBWithBuckets(t)
+	db := openTestDB(t)
 	repo := NewBucketRepository(db)
 	ctx := context.Background()
 
@@ -91,7 +51,7 @@ func TestBucketCreate_DuplicateName(t *testing.T) {
 }
 
 func TestBucketCreate_InvalidOwner(t *testing.T) {
-	db := openTestDBWithBuckets(t)
+	db := openTestDB(t)
 	repo := NewBucketRepository(db)
 	ctx := context.Background()
 
@@ -102,7 +62,7 @@ func TestBucketCreate_InvalidOwner(t *testing.T) {
 }
 
 func TestBucketGetByName(t *testing.T) {
-	db := openTestDBWithBuckets(t)
+	db := openTestDB(t)
 	repo := NewBucketRepository(db)
 	ctx := context.Background()
 
@@ -122,7 +82,7 @@ func TestBucketGetByName(t *testing.T) {
 }
 
 func TestBucketGetByName_NotFound(t *testing.T) {
-	db := openTestDBWithBuckets(t)
+	db := openTestDB(t)
 	repo := NewBucketRepository(db)
 	ctx := context.Background()
 
@@ -133,7 +93,7 @@ func TestBucketGetByName_NotFound(t *testing.T) {
 }
 
 func TestBucketList(t *testing.T) {
-	db := openTestDBWithBuckets(t)
+	db := openTestDB(t)
 	repo := NewBucketRepository(db)
 	ctx := context.Background()
 
@@ -167,7 +127,7 @@ func TestBucketList(t *testing.T) {
 }
 
 func TestBucketListByOwner(t *testing.T) {
-	db := openTestDBWithBuckets(t)
+	db := openTestDB(t)
 	repo := NewBucketRepository(db)
 	ctx := context.Background()
 
@@ -199,7 +159,7 @@ func TestBucketListByOwner(t *testing.T) {
 }
 
 func TestBucketDelete(t *testing.T) {
-	db := openTestDBWithBuckets(t)
+	db := openTestDB(t)
 	repo := NewBucketRepository(db)
 	ctx := context.Background()
 
@@ -221,51 +181,12 @@ func TestBucketDelete(t *testing.T) {
 }
 
 func TestBucketDelete_NotFound(t *testing.T) {
-	db := openTestDBWithBuckets(t)
+	db := openTestDB(t)
 	repo := NewBucketRepository(db)
 	ctx := context.Background()
 
 	if err := repo.Delete(ctx, "no-such-bucket"); !errors.Is(err, ErrBucketNotFound) {
 		t.Fatalf("expected ErrBucketNotFound, got %v", err)
-	}
-}
-
-func TestBucketCRUD_RoundTrip(t *testing.T) {
-	db := openTestDBWithBuckets(t)
-	repo := NewBucketRepository(db)
-	ctx := context.Background()
-
-	ownerID := insertTestUser(t, db)
-	want := newTestBucket(ownerID)
-
-	// Create
-	if err := repo.Create(ctx, want); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	// Read
-	got, err := repo.GetByName(ctx, want.Name)
-	if err != nil {
-		t.Fatalf("GetByName: %v", err)
-	}
-	assertBucketsEqual(t, want, got)
-
-	// List
-	buckets, err := repo.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(buckets) != 1 {
-		t.Fatalf("expected 1 bucket in List, got %d", len(buckets))
-	}
-
-	// Delete
-	if err := repo.Delete(ctx, want.Name); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-
-	if _, err := repo.GetByName(ctx, want.Name); !errors.Is(err, ErrBucketNotFound) {
-		t.Fatalf("expected ErrBucketNotFound after delete, got %v", err)
 	}
 }
 

@@ -123,27 +123,6 @@ func TestBearerAuthUnsupportedScheme(t *testing.T) {
 	}
 }
 
-func TestBearerAuthUnsupportedScheme_ChainReturnsErrUnsupportedScheme(t *testing.T) {
-	t.Parallel()
-
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	chain := &ChainAuthenticator{
-		Authenticators: []Authenticator{
-			&BearerAuthenticator{Repo: metadata.NewUserRepository(db)},
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
-
-	_, err := chain.Authenticate(req)
-	if err != ErrUnsupportedScheme {
-		t.Fatalf("expected ErrUnsupportedScheme from chain, got %v", err)
-	}
-}
-
 func TestBearerAuthMalformedToken(t *testing.T) {
 	t.Parallel()
 

@@ -9,50 +9,6 @@ import (
 	"uuid"
 )
 
-const createMultipartTables = `
-CREATE TABLE IF NOT EXISTS multipart_uploads (
-    id           TEXT PRIMARY KEY,
-    bucket_name  TEXT NOT NULL REFERENCES buckets(name),
-    key          TEXT NOT NULL,
-    content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
-    status       TEXT NOT NULL DEFAULT 'active',
-    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    status_updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    checksum_algorithm TEXT,
-    user_metadata TEXT
-);
-
-CREATE TABLE IF NOT EXISTS multipart_parts (
-    upload_id   TEXT NOT NULL REFERENCES multipart_uploads(id) ON DELETE CASCADE,
-    part_number INTEGER NOT NULL,
-    size        INTEGER NOT NULL,
-    etag        TEXT NOT NULL,
-    storage_path TEXT NOT NULL,
-    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    checksum_crc32 TEXT,
-    checksum_crc32c TEXT,
-    checksum_crc64nvme TEXT,
-    checksum_sha1 TEXT,
-    checksum_sha256 TEXT,
-    PRIMARY KEY (upload_id, part_number)
-);
-`
-
-func openTestDBWithMultiparts(t *testing.T) *sql.DB {
-	t.Helper()
-
-	db := openTestDBWithBuckets(t) // creates users and buckets tables
-
-	if _, err := db.Exec(createMultipartTables); err != nil {
-		t.Fatalf("create multipart tables: %v", err)
-	}
-	if _, err := db.Exec(createObjectsTable); err != nil {
-		t.Fatalf("create objects table: %v", err)
-	}
-
-	return db
-}
-
 func insertTestBucket(t *testing.T, db *sql.DB) string {
 	t.Helper()
 
@@ -92,7 +48,7 @@ func newTestMultipartPart(uploadID string, partNum int) *MultipartPart {
 }
 
 func TestMultipartUploadCreateGet(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -114,7 +70,7 @@ func TestMultipartUploadCreateGet(t *testing.T) {
 }
 
 func TestMultipartUploadCreate_DefaultsCreatedAtWhenZero(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -143,7 +99,7 @@ func TestMultipartUploadCreate_DefaultsCreatedAtWhenZero(t *testing.T) {
 }
 
 func TestMultipartUploadDelete(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -164,7 +120,7 @@ func TestMultipartUploadDelete(t *testing.T) {
 }
 
 func TestMultipartUploadListStale(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -223,7 +179,7 @@ func TestMultipartUploadListStale(t *testing.T) {
 }
 
 func TestMultipartPartAddList(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -258,7 +214,7 @@ func TestMultipartPartAddList(t *testing.T) {
 }
 
 func TestMultipartPartAdd_ReplacesExistingPart(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -294,7 +250,7 @@ func TestMultipartPartAdd_ReplacesExistingPart(t *testing.T) {
 }
 
 func TestMultipartDeleteCascades(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -324,7 +280,7 @@ func TestMultipartDeleteCascades(t *testing.T) {
 }
 
 func TestMultipartUploadCompleteUpload(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	objRepo := NewObjectRepository(db)
 	ctx := context.Background()
@@ -380,7 +336,7 @@ func TestMultipartUploadCompleteUpload(t *testing.T) {
 }
 
 func TestMultipartUploadCompleteUpload_OverwriteExistingObject(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	objRepo := NewObjectRepository(db)
 	ctx := context.Background()
@@ -433,7 +389,7 @@ func TestMultipartUploadCompleteUpload_OverwriteExistingObject(t *testing.T) {
 }
 
 func TestMultipartUploadCompleteUpload_NotFound(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -457,7 +413,7 @@ func TestMultipartUploadCompleteUpload_NotFound(t *testing.T) {
 }
 
 func TestMultipartUploadCompleteUpload_RejectNonCompleting(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	objRepo := NewObjectRepository(db)
 	ctx := context.Background()
@@ -513,7 +469,7 @@ func TestMultipartUploadCompleteUpload_RejectNonCompleting(t *testing.T) {
 }
 
 func TestMultipartUploadSetUploadStatus(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -549,7 +505,7 @@ func TestMultipartUploadSetUploadStatus(t *testing.T) {
 }
 
 func TestMultipartUploadSetUploadStatus_NotFound(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -559,7 +515,7 @@ func TestMultipartUploadSetUploadStatus_NotFound(t *testing.T) {
 }
 
 func TestMultipartUploadStatusValidation(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -583,7 +539,7 @@ func TestMultipartUploadStatusValidation(t *testing.T) {
 }
 
 func TestMultipartUploadClaim(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -612,7 +568,7 @@ func TestMultipartUploadClaim(t *testing.T) {
 }
 
 func TestMultipartUploadClaim_NotFound(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 
@@ -622,7 +578,7 @@ func TestMultipartUploadClaim_NotFound(t *testing.T) {
 }
 
 func TestMultipartPartAdd_RejectedWhenClaimed(t *testing.T) {
-	db := openTestDBWithMultiparts(t)
+	db := openTestDB(t)
 	repo := NewMultipartUploadRepository(db)
 	ctx := context.Background()
 

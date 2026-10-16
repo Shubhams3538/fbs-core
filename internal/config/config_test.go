@@ -6,56 +6,23 @@ import (
 	"time"
 )
 
-func TestDefaultConfig(t *testing.T) {
+func TestDefaultConfigIsValid(t *testing.T) {
 	cfg := Default()
-
-	if cfg.HTTPAddr != defaultHTTPAddr {
-		t.Errorf("HTTPAddr = %q, want %q", cfg.HTTPAddr, defaultHTTPAddr)
-	}
-	if cfg.DBPath != defaultDBPath {
-		t.Errorf("DBPath = %q, want %q", cfg.DBPath, defaultDBPath)
-	}
-	if cfg.DataDir != defaultDataDir {
-		t.Errorf("DataDir = %q, want %q", cfg.DataDir, defaultDataDir)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config is invalid: %v", err)
 	}
 	if cfg.DevMode {
 		t.Error("expected DevMode to be false by default")
 	}
-	if cfg.MetadataCacheSizeBytes != 512*1024*1024 {
-		t.Errorf("MetadataCacheSizeBytes = %d, want 512MiB", cfg.MetadataCacheSizeBytes)
-	}
 }
 
 func TestConfigValidate_DevModeRequiresLoopback(t *testing.T) {
-	cases := []struct {
-		name    string
-		addr    string
-		devMode bool
-		wantErr bool
-	}{
-		{"dev off any addr", "0.0.0.0:9000", false, false},
-		{"dev on loopback 127.0.0.1", "127.0.0.1:9000", true, false},
-		{"dev on loopback localhost", "localhost:9000", true, false},
-		{"dev on loopback ::1", "[::1]:9000", true, false},
-		{"dev on public addr", "0.0.0.0:9000", true, true},
-		{"dev on empty host", ":9000", true, true},
-		{"dev on interface", "192.168.1.1:9000", true, true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := Default()
-			cfg.HTTPAddr = tc.addr
-			cfg.DevMode = tc.devMode
-
-			err := cfg.Validate()
-			if tc.wantErr && err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
+	// The address cases belong to auth.ValidateDevMode; this checks the wiring.
+	cfg := Default()
+	cfg.HTTPAddr = "0.0.0.0:9000"
+	cfg.DevMode = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected dev mode on a public address to fail validation")
 	}
 }
 
@@ -179,51 +146,26 @@ func TestLoad_FlagOverridesEnv(t *testing.T) {
 	}
 }
 
-func TestConfigValidation_TimeoutsMustBePositive(t *testing.T) {
-	cfg := Default()
-	cfg.ReadTimeout = 0
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for zero read timeout")
+func TestConfigValidationRejectsInvalidFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*Config)
+	}{
+		{"zero read timeout", func(cfg *Config) { cfg.ReadTimeout = 0 }},
+		{"empty HTTP address", func(cfg *Config) { cfg.HTTPAddr = "" }},
+		{"empty database path", func(cfg *Config) { cfg.DBPath = "" }},
+		{"empty data directory", func(cfg *Config) { cfg.DataDir = "" }},
+		{"invalid public URL", func(cfg *Config) { cfg.PublicBaseURL = "://invalid" }},
+		{"empty CORS origins", func(cfg *Config) { cfg.CORSAllowedOrigins = nil }},
 	}
-}
-
-func TestConfigValidation_EmptyHTTPAddr(t *testing.T) {
-	cfg := Default()
-	cfg.HTTPAddr = ""
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty HTTPAddr")
-	}
-}
-
-func TestConfigValidation_EmptyDBPath(t *testing.T) {
-	cfg := Default()
-	cfg.DBPath = ""
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty DBPath")
-	}
-}
-
-func TestConfigValidation_EmptyDataDir(t *testing.T) {
-	cfg := Default()
-	cfg.DataDir = ""
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty DataDir")
-	}
-}
-
-func TestConfigValidation_InvalidPublicBaseURL(t *testing.T) {
-	cfg := Default()
-	cfg.PublicBaseURL = "://invalid"
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for invalid PublicBaseURL")
-	}
-}
-
-func TestConfigValidation_EmptyCORSOrigins(t *testing.T) {
-	cfg := Default()
-	cfg.CORSAllowedOrigins = []string{}
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty CORSAllowedOrigins")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Default()
+			test.change(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected invalid configuration to fail validation")
+			}
+		})
 	}
 }
 

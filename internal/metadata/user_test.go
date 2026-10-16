@@ -2,49 +2,12 @@ package metadata
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 	"uuid"
-
-	_ "modernc.org/sqlite"
 )
-
-// createUsersTable is the DDL used for test isolation.
-// We only create the users table here — other tables are tested in their own files.
-const createUsersTable = `
-CREATE TABLE IF NOT EXISTS users (
-    id                  TEXT PRIMARY KEY,
-    display_name        TEXT NOT NULL,
-    access_key_id       TEXT NOT NULL UNIQUE,
-    secret_hash         TEXT NOT NULL,
-    sigv4_access_key_id TEXT UNIQUE,
-    sigv4_secret_key    TEXT,
-    role                TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
-    is_active           INTEGER NOT NULL DEFAULT 1,
-    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);`
-
-// openTestDB opens an in-memory SQLite database and creates the users table.
-func openTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open in-memory db: %v", err)
-	}
-
-	t.Cleanup(func() { _ = db.Close() })
-
-	if _, err := db.Exec(createUsersTable); err != nil {
-		t.Fatalf("create users table: %v", err)
-	}
-
-	return db
-}
 
 // newTestUser returns a User with sensible defaults for testing.
 func newTestUser() *User {
@@ -60,16 +23,6 @@ func newTestUser() *User {
 		IsActive:         true,
 		CreatedAt:        now,
 		UpdatedAt:        now,
-	}
-}
-
-func TestUserCreate(t *testing.T) {
-	repo := NewUserRepository(openTestDB(t))
-	ctx := context.Background()
-
-	u := newTestUser()
-	if err := repo.Create(ctx, u); err != nil {
-		t.Fatalf("Create: %v", err)
 	}
 }
 
@@ -427,48 +380,6 @@ func TestUserDelete_NotFound(t *testing.T) {
 
 	if err := repo.Delete(ctx, "no-such-id"); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("expected ErrUserNotFound, got %v", err)
-	}
-}
-
-func TestUserCRUD_RoundTrip(t *testing.T) {
-	repo := NewUserRepository(openTestDB(t))
-	ctx := context.Background()
-
-	// Create
-	want := newTestUser()
-	if err := repo.Create(ctx, want); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	// Read
-	got, err := repo.GetByID(ctx, want.ID)
-	if err != nil {
-		t.Fatalf("GetByID: %v", err)
-	}
-	assertUsersEqual(t, want, got)
-
-	// Update
-	want.DisplayName = "Alice v2"
-	want.Role = "admin"
-	if err := repo.Update(ctx, want); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	got, err = repo.GetByID(ctx, want.ID)
-	if err != nil {
-		t.Fatalf("GetByID after update: %v", err)
-	}
-	if got.DisplayName != "Alice v2" {
-		t.Errorf("DisplayName mismatch after update: %q", got.DisplayName)
-	}
-
-	// Delete
-	if err := repo.Delete(ctx, want.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-
-	if _, err := repo.GetByID(ctx, want.ID); !errors.Is(err, ErrUserNotFound) {
-		t.Fatalf("expected ErrUserNotFound after delete, got %v", err)
 	}
 }
 

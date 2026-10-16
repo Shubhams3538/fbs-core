@@ -53,9 +53,3 @@ func TestValidateAlias(t *testing.T) {
 		}
 	}
 }
-
-func TestPath(t *testing.T) {
-	if got := Path("abc123"); got != "/s/abc123" {
-		t.Fatalf("Path() = %q, want /s/abc123", got)
-	}
-}

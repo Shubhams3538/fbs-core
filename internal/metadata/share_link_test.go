@@ -17,11 +17,7 @@ type shareLinkTestEnv struct {
 func newShareLinkTestEnv(t *testing.T) shareLinkTestEnv {
 	t.Helper()
 
-	db, err := Open(t.TempDir() + "/share-links.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	users := NewUserRepository(db)

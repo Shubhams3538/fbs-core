@@ -9,13 +9,19 @@ import (
 	"uuid"
 )
 
-func TestOpenDB(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "fbs.db")
-	db, err := Open(dbPath)
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	db, err := Open(filepath.Join(t.TempDir(), "metadata.db"))
 	if err != nil {
-		t.Fatalf("Open failed: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func TestOpenDB(t *testing.T) {
+	db := openTestDB(t)
 	db.SetMaxOpenConns(2)
 
 	var journalMode string
@@ -66,42 +72,40 @@ func assertConnectionPragmas(t *testing.T, conn interface {
 	}
 }
 
-func TestMigrations(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "fbs_migrate.db")
+func TestOpenDBPersistence(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "metadata.db")
 
-	// First run creates tables
 	db1, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("first Open failed: %v", err)
 	}
-	db1.Close()
+	t.Cleanup(func() { _ = db1.Close() })
+	ctx := context.Background()
+	want := newTestUser()
+	if err := NewUserRepository(db1).Create(ctx, want); err != nil {
+		t.Fatalf("create user before close: %v", err)
+	}
+	if err := db1.Close(); err != nil {
+		t.Fatalf("close first database: %v", err)
+	}
 
-	// Second run should be idempotent
 	db2, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("second Open failed: %v", err)
 	}
 	defer db2.Close()
 
-	// Check tables exist
-	var count int
-	err = db2.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users', 'buckets', 'objects', 'multipart_uploads', 'multipart_parts', 'object_activity')").Scan(&count)
+	got, err := NewUserRepository(db2).GetByID(ctx, want.ID)
 	if err != nil {
-		t.Fatalf("query sqlite_master: %v", err)
+		t.Fatalf("read user after reopen: %v", err)
 	}
-	if count != 6 {
-		t.Errorf("expected 6 metadata tables to be created, got %d", count)
-	}
+	assertUsersEqual(t, want, got)
+	assertConnectionPragmas(t, db2)
 }
 
 func TestListStaleUpsert(t *testing.T) {
 	// A combined test checking the stale logic for multiparts and upsert for objects as requested
-	dbPath := filepath.Join(t.TempDir(), "fbs_mixed.db")
-	db, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer db.Close()
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	userRepo := NewUserRepository(db)
