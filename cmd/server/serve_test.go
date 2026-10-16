@@ -104,6 +104,7 @@ func testServeInflightShutdown(t *testing.T, exceedDeadline bool) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("request did not enter handler")
 	}
+	shutdownRequested := time.Now()
 	cancel()
 	select {
 	case <-shutdownStarted:
@@ -111,13 +112,23 @@ func testServeInflightShutdown(t *testing.T, exceedDeadline bool) {
 		t.Fatal("serve did not begin shutdown")
 	}
 	if exceedDeadline {
+		// Allow scheduling delays while keeping the entire observation window
+		// below the other scenario's one-second timeout. A hardcoded timeout
+		// must not satisfy this test merely by eventually returning an error.
+		maxElapsed := cfg.ShutdownTimeout + 425*time.Millisecond
+		timer := time.NewTimer(time.Until(shutdownRequested.Add(maxElapsed)))
+		defer timer.Stop()
 		select {
 		case err := <-served:
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("shutdown error = %v, want deadline exceeded", err)
 			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("serve ignored the configured 75ms shutdown deadline")
+			elapsed := time.Since(shutdownRequested)
+			if elapsed < cfg.ShutdownTimeout || elapsed > maxElapsed {
+				t.Fatalf("shutdown elapsed = %s, want between %s and %s", elapsed, cfg.ShutdownTimeout, maxElapsed)
+			}
+		case <-timer.C:
+			t.Fatalf("serve ignored the configured shutdown deadline: no return within %s", maxElapsed)
 		}
 	} else {
 		// Observe that cancellation leaves an active request running. Close would

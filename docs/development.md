@@ -74,7 +74,7 @@ python3 scripts/verify-test-regressions.py
 ```
 
 The script first checks that each focused test passes, then uses temporary Go
-overlays to reject 22 known regressions across authentication, request framing,
+overlays to reject 24 known regressions across authentication, request framing,
 transaction cleanup, cache publication and memory accounting, legacy multipart
 upgrades, Unicode listings, published checksum vectors, conditional writes,
 deactivation, backing-file deletion, process isolation, setup access, configuration,

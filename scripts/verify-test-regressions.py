@@ -187,6 +187,20 @@ def main():
         "./internal/config", "^TestLoadWiresEnvironmentAndFlags$", "Load() =",
     )
 
+    verify_regression(
+        "configured shutdown deadline", "cmd/server/serve.go",
+        "context.WithTimeout(context.Background(), cfg.ShutdownTimeout)",
+        "context.WithTimeout(context.Background(), 1_000_000_000)",
+        "./cmd/server", "^TestServeShutdownUsesConfiguredDeadline$",
+        "serve ignored the configured shutdown deadline",
+    )
+    verify_regression(
+        "premature shutdown deadline", "cmd/server/serve.go",
+        "context.WithTimeout(context.Background(), cfg.ShutdownTimeout)",
+        "context.WithTimeout(context.Background(), 0)",
+        "./cmd/server", "^TestServeShutdownUsesConfiguredDeadline$", "shutdown elapsed =",
+    )
+
 
 if __name__ == "__main__":
     main()

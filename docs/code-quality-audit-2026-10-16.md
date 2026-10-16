@@ -73,7 +73,7 @@ python3 scripts/prove-production-audit.py
 ```
 
 All checks above passed locally; deadcode printed nothing. The mutation script
-rejects **22 regressions using temporary Go overlays** and checks the intended
+rejects **24 regressions using temporary Go overlays** and checks the intended
 assertion, rather than treating a compile failure as success. The isolated normal
 compiled-server proof passes **19 HTTP checks**, including exact object bytes,
 conditional failures, a published checksum, Unicode listing, chunked limits,
