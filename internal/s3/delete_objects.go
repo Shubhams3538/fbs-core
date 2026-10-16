@@ -144,7 +144,7 @@ func parseDeleteObjectsRequest(w http.ResponseWriter, r *http.Request) (deleteOb
 	}
 
 	var req deleteObjectsRequest
-	if err := xml.Unmarshal(payload, &req); err != nil {
+	if err := decodeXMLRequest(payload, &req); err != nil {
 		return deleteObjectsRequest{}, err
 	}
 	if req.XMLName.Local != "Delete" || len(req.Objects) == 0 {

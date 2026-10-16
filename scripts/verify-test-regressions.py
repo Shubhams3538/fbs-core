@@ -46,6 +46,48 @@ def verify_regression(name, path, before, after, package, test, failure):
 
 def main():
     verify_regression(
+        "signed control body integrity", "internal/http/request_body.go",
+        'expected != "" && expected != "UNSIGNED-PAYLOAD"', 'false',
+        "./cmd/server", "^TestSignedManagementBodyIntegrity$", "status = 201, want 400",
+    )
+    verify_regression(
+        "authenticated payload digest propagation", "internal/auth/sigv4.go",
+        "SignedPayloadHash: payloadHash,", 'SignedPayloadHash: "",',
+        "./cmd/server", "^TestSignedManagementBodyIntegrity$", "status = 201, want 400",
+    )
+    verify_regression(
+        "presigned upload digest validation", "internal/s3/checksum.go",
+        "principal.SignedPayloadHash}", "principal.SignedPayloadHash[:0]}",
+        "./cmd/server", "^TestSignedUploadBodyIntegrity$/^object$/^query_changed$", "status = 200, want 400",
+    )
+    verify_regression(
+        "grouped listing marker before limit", "internal/metadata/objects.go",
+        "WHERE g.virtual_key > ?", "WHERE (? = '' OR 1 = 1)",
+        "./internal/metadata", "^TestDelimitedListingFiltersGroupedKeysBeforeLimit$", "want page and lookahead",
+    )
+    verify_regression(
+        "pending multipart deletion conflict", "internal/metadata/bucket_cleanup.go",
+        "if hasUploads {", "if false {",
+        "./internal/management", "^TestManagementDeleteBucketRejectsMultipartWithoutDeletingData$", "want 409",
+    )
+    verify_regression(
+        "COMMIT result survives request cancellation", "internal/metadata/transaction.go",
+        'tx.ExecContext(context.WithoutCancel(ctx), "COMMIT")', 'tx.ExecContext(ctx, "COMMIT")',
+        "./internal/metadata", "^TestImmediateTransactionCancellationAtCommitKeepsResultConsistent$",
+        "commit misreported cancellation",
+    )
+    verify_regression(
+        "cancellation before COMMIT rolls back", "internal/metadata/transaction.go",
+        "if err := ctx.Err(); err != nil {\n\t\treturn err\n\t}", "// missing cancellation check",
+        "./internal/metadata", "^TestImmediateTransactionCanceledBeforeCommitRollsBack$",
+        "want context.Canceled",
+    )
+    verify_regression(
+        "XML framing before mutation", "internal/s3/request_xml.go",
+        "return finishXMLRequest(decoder)", "return nil", "./internal/s3",
+        "^TestXMLRequestsRejectInvalidFramingBeforeMutation$", "malformed XML status=200 want 400",
+    )
+    verify_regression(
         "real migration schema",
         "migrations/migration.go",
         "CHECK (role IN ('admin', 'member'))",

@@ -301,6 +301,11 @@ func (r *cachedBucketRepository) Delete(ctx context.Context, name string) error 
 	return nil
 }
 
+func (r *cachedBucketRepository) DeleteWithObjects(ctx context.Context, name string) ([]Object, error) {
+	defer r.cache.evictBucket(name)
+	return r.delegate.DeleteWithObjects(ctx, name)
+}
+
 type cachedObjectRepository struct {
 	delegate ObjectRepository
 	cache    *MetadataCache

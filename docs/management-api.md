@@ -175,7 +175,7 @@ Bucket summaries include:
 - `object_count`
 - `total_object_bytes`
 
-Management bucket deletion is intentionally stronger than S3 `DeleteBucket`: it deletes all object metadata and backing files before deleting the bucket row.
+Management bucket deletion removes the bucket and its object metadata in one database transaction, then removes the captured backing files. If any multipart upload remains, in any state, it returns HTTP 409 with `bucket_has_multipart_uploads` before deleting objects or files. Complete or abort pending uploads before retrying; stale failed uploads follow the normal multipart cleanup lifecycle. The multipart check and metadata deletion share the database write lock, including against concurrent upload creation. After commit, file cleanup uses an independent five-second context and attempts every captured path. A cleanup error returns HTTP 500 after metadata has been deleted; remaining orphan files are removed by startup reconciliation.
 
 ## Objects
 

@@ -15,6 +15,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/i-got-this-faa/fbs/internal/auth"
 )
 
 type checksumPipeline struct {
@@ -29,7 +31,8 @@ type checksumCheck struct {
 	sum      func() []byte
 }
 
-func newChecksumPipeline(header http.Header) (*checksumPipeline, error) {
+func newChecksumPipeline(r *http.Request) (*checksumPipeline, error) {
+	header := r.Header
 	md5Hash := md5.New()
 	writers := []io.Writer{md5Hash}
 
@@ -48,18 +51,25 @@ func newChecksumPipeline(header http.Header) (*checksumPipeline, error) {
 		})
 	}
 
-	if value := strings.TrimSpace(header.Get("X-Amz-Content-SHA256")); value != "" && value != unsignedPayloadHash {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	var payloadHash hash.Hash
+	for _, value := range []string{strings.TrimSpace(header.Get("X-Amz-Content-SHA256")), principal.SignedPayloadHash} {
+		if value == "" || value == unsignedPayloadHash {
+			continue
+		}
 		expected, err := hex.DecodeString(value)
 		if err != nil || len(expected) != sha256.Size {
 			return nil, fmt.Errorf("%s: %w", "X-Amz-Content-SHA256", errInvalidDigest)
 		}
-		sha256Hash := sha256.New()
-		writers = append(writers, sha256Hash)
+		if payloadHash == nil {
+			payloadHash = sha256.New()
+			writers = append(writers, payloadHash)
+		}
 		checks = append(checks, checksumCheck{
 			name:     "X-Amz-Content-SHA256",
 			expected: expected,
 			sum: func() []byte {
-				return sha256Hash.Sum(nil)
+				return payloadHash.Sum(nil)
 			},
 		})
 	}

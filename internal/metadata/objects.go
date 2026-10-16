@@ -202,11 +202,15 @@ func (r *sqliteObjectRepository) ListDelimited(ctx context.Context, bucketName, 
 	// Keys that share a virtual key under a delimiter collapse into one
 	// CommonPrefix entry whose cursor is MAX(key) within the group.
 	//
-	// Parameters (15 total, in order):
+	// Filter virtual keys as well as underlying keys: a marker inside a group
+	// must exclude that group's prefix before it consumes a result slot.
+	//
+	// Parameters (16 total, in order):
 	//   raw CTE : prefixLen, bucketName, startAfter, prefix, prefixLen, prefix
 	//   v CTE   : delimiter, delimiter, prefixLen, delimiter, delimiter (virtual_key CASE)
 	//             delimiter, delimiter                       (is_cp CASE)
 	//   JOIN    : bucketName
+	//   WHERE   : startAfter
 	//   LIMIT   : maxKeys+1
 	const q = `
 WITH raw AS (
@@ -231,6 +235,7 @@ SELECT g.virtual_key, g.cursor_key, g.is_cp,
        o.id, o.bucket_name, o.key, o.size, o.etag, o.content_type, o.storage_path, o.created_at, o.updated_at
 FROM grouped g
 LEFT JOIN objects o ON g.is_cp = 0 AND o.bucket_name = ? AND o.key = g.virtual_key
+WHERE g.virtual_key > ?
 ORDER BY g.virtual_key
 LIMIT ?`
 
@@ -240,6 +245,7 @@ LIMIT ?`
 		delimiter, delimiter, prefixLen, delimiter, delimiter, // v CTE virtual_key
 		delimiter, delimiter, // v CTE is_cp
 		bucketName,  // JOIN
+		startAfter,  // WHERE
 		maxKeys + 1, // LIMIT
 	}
 

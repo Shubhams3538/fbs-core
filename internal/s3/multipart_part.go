@@ -52,7 +52,7 @@ func (h *ObjectHandlers) UploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pipeline, err := newChecksumPipeline(r.Header)
+	pipeline, err := newChecksumPipeline(r)
 	if err != nil {
 		if errors.Is(err, errInvalidDigest) {
 			WriteS3Error(w, r, http.StatusBadRequest, codeInvalidDigest, messageInvalidDigest)

@@ -33,19 +33,13 @@ func (h *ObjectHandlers) CompleteMultipartUpload(w http.ResponseWriter, r *http.
 	}
 	defer release()
 
-	claim, ok := h.claimUpload(w, r, uploadID, metadata.MultipartUploadStatusCompleting, bucketName, key)
-	if !ok {
-		return
-	}
-	defer claim.release()
-
 	var req CompleteMultipartUpload
 	payload, err := httpapi.ReadBody(w, r, 2<<20)
 	if err != nil {
 		WriteS3Error(w, r, http.StatusBadRequest, codeMalformedXML, messageMalformedXML)
 		return
 	}
-	if err := xml.Unmarshal(payload, &req); err != nil {
+	if err := decodeXMLRequest(payload, &req); err != nil {
 		WriteS3Error(w, r, http.StatusBadRequest, codeMalformedXML, messageMalformedXML)
 		return
 	}
@@ -54,6 +48,12 @@ func (h *ObjectHandlers) CompleteMultipartUpload(w http.ResponseWriter, r *http.
 		writeCompletedPartsError(w, r, err)
 		return
 	}
+	claim, ok := h.claimUpload(w, r, uploadID, metadata.MultipartUploadStatusCompleting, bucketName, key)
+	if !ok {
+		return
+	}
+	defer claim.release()
+
 	storedParts, err := h.MultipartUploads.ListParts(r.Context(), uploadID)
 	if err != nil {
 		h.logError("list multipart parts", err, bucketName, key, "")

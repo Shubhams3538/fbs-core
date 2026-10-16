@@ -4,6 +4,14 @@ The S3-compatible API is rooted at `/`. Protected S3 routes accept Bearer tokens
 
 The implemented region is `us-east-1`.
 
+SigV4 payload digests are checked against the consumed body before control
+requests mutate metadata or upload streams are published. This includes a digest
+in the authenticated `X-Amz-Content-SHA256` query parameter on presigned uploads.
+Header and authenticated query digests must both match when both are supplied.
+`UNSIGNED-PAYLOAD` remains supported; it intentionally does not bind the body to a
+digest. Object and multipart-part uploads are hashed while streaming.
+
+
 ## Authorization
 
 After authentication, each data-plane operation is authorized through a fixed action catalog (`s3:ListBucket`, `s3:GetObject`, `s3:PutObject`, and related actions). Evaluation order is: **admin** → **bucket owner** → **active resource grant** (optional key prefix) → **deny**. Denied calls return S3 `AccessDenied`. Grants are managed via the Management API, not via S3 `?acl` or `?policy` (those remain unsupported). See `plan/access-control/access-control.md`.
