@@ -234,22 +234,11 @@ func (r *sqliteMultipartUploadRepository) ClaimUpload(ctx context.Context, uploa
 		return fmt.Errorf("invalid multipart upload claim status: %s", status)
 	}
 
-	conn, err := r.db.Conn(ctx)
+	conn, err := beginImmediate(ctx, r.db)
 	if err != nil {
 		return fmt.Errorf("acquire db connection for claim upload: %w", err)
 	}
-	defer conn.Close()
-
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
-		}
-	}()
-
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("begin immediate tx: %w", err)
-	}
+	defer conn.close()
 
 	var currentStatus MultipartUploadStatus
 	if err := conn.QueryRowContext(ctx,
@@ -273,10 +262,9 @@ func (r *sqliteMultipartUploadRepository) ClaimUpload(ctx context.Context, uploa
 		return fmt.Errorf("update upload status: %w", err)
 	}
 
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+	if err := conn.commit(ctx); err != nil {
 		return fmt.Errorf("commit claim upload tx: %w", err)
 	}
-	committed = true
 	return nil
 }
 
@@ -305,22 +293,11 @@ func (r *sqliteMultipartUploadRepository) SetUploadStatus(ctx context.Context, u
 }
 
 func (r *sqliteMultipartUploadRepository) AddPart(ctx context.Context, part *MultipartPart) (string, error) {
-	conn, err := r.db.Conn(ctx)
+	conn, err := beginImmediate(ctx, r.db)
 	if err != nil {
 		return "", fmt.Errorf("acquire db connection for add part: %w", err)
 	}
-	defer conn.Close()
-
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
-		}
-	}()
-
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return "", fmt.Errorf("begin immediate tx: %w", err)
-	}
+	defer conn.close()
 
 	var status MultipartUploadStatus
 	if err := conn.QueryRowContext(ctx,
@@ -380,35 +357,23 @@ func (r *sqliteMultipartUploadRepository) AddPart(ctx context.Context, part *Mul
 		return "", fmt.Errorf("add multipart part: %w", err)
 	}
 
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+	if err := conn.commit(ctx); err != nil {
 		return "", fmt.Errorf("commit add part tx: %w", err)
 	}
-	committed = true
 	return oldStoragePath, nil
 }
 
 func (r *sqliteMultipartUploadRepository) CompleteUpload(ctx context.Context, obj *Object, uploadID string, ifMatch, ifNoneMatch string) (string, error) {
-	conn, err := r.db.Conn(ctx)
+	conn, err := beginImmediate(ctx, r.db)
 	if err != nil {
 		return "", fmt.Errorf("acquire db connection for complete upload: %w", err)
 	}
-	defer conn.Close()
+	defer conn.close()
 
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
-		}
-	}()
-
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return "", fmt.Errorf("begin immediate tx: %w", err)
-	}
-
-	if err := requireCompletingUpload(ctx, conn, uploadID); err != nil {
+	if err := requireCompletingUpload(ctx, conn.Conn, uploadID); err != nil {
 		return "", err
 	}
-	existing, err := loadObjectVersion(ctx, conn, obj.BucketName, obj.Key)
+	existing, err := loadObjectVersion(ctx, conn.Conn, obj.BucketName, obj.Key)
 	if err != nil {
 		return "", err
 	}
@@ -426,10 +391,9 @@ func (r *sqliteMultipartUploadRepository) CompleteUpload(ctx context.Context, ob
 		return "", fmt.Errorf("delete multipart upload: %w", err)
 	}
 
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+	if err := conn.commit(ctx); err != nil {
 		return "", fmt.Errorf("commit complete upload tx: %w", err)
 	}
-	committed = true
 	return existing.storagePath, nil
 }
 
@@ -573,9 +537,9 @@ func (r *sqliteMultipartUploadRepository) ListByBucket(ctx context.Context, buck
 func scanMultipartUpload(row rowScanner) (*MultipartUpload, error) {
 	var u MultipartUpload
 	var createdAt, statusUpdatedAt string
-	var metaStr sql.NullString
+	var metaStr, checksumAlgorithm sql.NullString
 
-	err := row.Scan(&u.ID, &u.BucketName, &u.Key, &u.ContentType, &u.Status, &createdAt, &statusUpdatedAt, &u.ChecksumAlgorithm, &metaStr)
+	err := row.Scan(&u.ID, &u.BucketName, &u.Key, &u.ContentType, &u.Status, &createdAt, &statusUpdatedAt, &checksumAlgorithm, &metaStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrMultipartUploadNotFound
 	}
@@ -583,6 +547,7 @@ func scanMultipartUpload(row rowScanner) (*MultipartUpload, error) {
 		return nil, fmt.Errorf("scan multipart upload: %w", err)
 	}
 
+	u.ChecksumAlgorithm = checksumAlgorithm.String
 	u.CreatedAt, err = parseTimestamp(createdAt)
 	if err != nil {
 		return nil, err

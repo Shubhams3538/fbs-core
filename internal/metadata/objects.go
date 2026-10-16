@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 type Object struct {
@@ -44,6 +45,7 @@ type DelimitedListEntry struct {
 // ObjectRepository defines CRUD operations for objects.
 type ObjectRepository interface {
 	Create(ctx context.Context, obj *Object) error
+	Replace(ctx context.Context, obj *Object, ifMatch, ifNoneMatch string) (string, error)
 	GetByKey(ctx context.Context, bucketName, key string) (*Object, error)
 	List(ctx context.Context, bucketName, prefix, startAfter string, maxKeys int) ([]Object, bool, error)
 	// ListDelimited groups keys by their immediate virtual prefix under
@@ -200,9 +202,9 @@ func (r *sqliteObjectRepository) ListDelimited(ctx context.Context, bucketName, 
 	// Keys that share a virtual key under a delimiter collapse into one
 	// CommonPrefix entry whose cursor is MAX(key) within the group.
 	//
-	// Parameters (14 total, in order):
+	// Parameters (15 total, in order):
 	//   raw CTE : prefixLen, bucketName, startAfter, prefix, prefixLen, prefix
-	//   v CTE   : delimiter, delimiter, prefixLen, delimiter (virtual_key CASE)
+	//   v CTE   : delimiter, delimiter, prefixLen, delimiter, delimiter (virtual_key CASE)
 	//             delimiter, delimiter                       (is_cp CASE)
 	//   JOIN    : bucketName
 	//   LIMIT   : maxKeys+1
@@ -216,7 +218,7 @@ WITH raw AS (
 v AS (
   SELECT key,
     CASE WHEN ? != '' AND instr(remainder, ?) > 0
-         THEN substr(key, 1, ? + instr(remainder, ?))
+         THEN substr(key, 1, ? + instr(remainder, ?) + length(?) - 1)
          ELSE key END AS virtual_key,
     CASE WHEN ? != '' AND instr(remainder, ?) > 0 THEN 1 ELSE 0 END AS is_cp
   FROM raw
@@ -232,10 +234,10 @@ LEFT JOIN objects o ON g.is_cp = 0 AND o.bucket_name = ? AND o.key = g.virtual_k
 ORDER BY g.virtual_key
 LIMIT ?`
 
-	prefixLen := len(prefix)
+	prefixLen := utf8.RuneCountInString(prefix)
 	args := []any{
 		prefixLen, bucketName, startAfter, prefix, prefixLen, prefix, // raw CTE
-		delimiter, delimiter, prefixLen, delimiter, // v CTE virtual_key
+		delimiter, delimiter, prefixLen, delimiter, delimiter, // v CTE virtual_key
 		delimiter, delimiter, // v CTE is_cp
 		bucketName,  // JOIN
 		maxKeys + 1, // LIMIT

@@ -65,13 +65,6 @@ func (h *ObjectHandlers) CopyObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oldDestinationObject, err := h.Objects.GetByKey(r.Context(), destinationBucket, destinationKey)
-	if err != nil && !errors.Is(err, metadata.ErrObjectNotFound) {
-		h.logError("load existing destination object before copy", err, destinationBucket, destinationKey, "")
-		WriteS3Error(w, r, http.StatusInternalServerError, codeInternalError, messageInternalError)
-		return
-	}
-
 	sourceFile, err := h.Storage.Open(r.Context(), sourceObject.StoragePath)
 	if err != nil {
 		mapAuthenticatedStorageReadError(w, r, h, err, sourceObject)
@@ -115,18 +108,17 @@ func (h *ObjectHandlers) CopyObject(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:    now,
 		UserMetadata: userMeta,
 	}
-	if err := h.Objects.Create(r.Context(), destinationObject); err != nil {
+	replacedPath, err := h.Objects.Replace(r.Context(), destinationObject, r.Header.Get("If-Match"), r.Header.Get("If-None-Match"))
+	if err != nil {
 		h.logError("create copied object metadata", err, destinationBucket, destinationKey, storagePath)
-		_ = h.Storage.Delete(r.Context(), storagePath)
-		WriteS3Error(w, r, http.StatusInternalServerError, codeInternalError, messageInternalError)
+		h.deleteStoredFile(storagePath, "discard failed object copy", destinationBucket, destinationKey)
+		h.writeObjectReplaceError(w, r, err)
 		return
 	}
 	h.recordActivity(r, metadata.ActivityCopyObject, destinationBucket, destinationKey, size, destinationObject.ETag)
 
-	if oldDestinationObject != nil && oldDestinationObject.StoragePath != storagePath {
-		if err := h.Storage.Delete(r.Context(), oldDestinationObject.StoragePath); err != nil {
-			h.logError("delete old object backing file after copy", err, destinationBucket, destinationKey, oldDestinationObject.StoragePath)
-		}
+	if replacedPath != "" && replacedPath != storagePath {
+		h.deleteStoredFile(replacedPath, "delete old object backing file after copy", destinationBucket, destinationKey)
 	}
 
 	w.Header().Set("Content-Type", "application/xml")

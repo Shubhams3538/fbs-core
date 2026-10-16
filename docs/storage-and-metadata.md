@@ -133,7 +133,7 @@ Object writes are atomic from the perspective of metadata:
 
 - The request body is copied to a temporary file.
 - The temporary file is synced and renamed to a unique final path.
-- Metadata is inserted or upserted.
+- A write transaction checks destination conditions and inserts or upserts metadata.
 - On overwrite, the old backing file is deleted only after the new metadata row is committed.
 
 If the metadata commit fails, the new backing file is deleted.
@@ -183,5 +183,21 @@ Default TTL is `24h`; default cleanup interval is `1h`.
 
 When `FBS_METADATA_CACHE_SIZE` or `--metadata-cache-size` is greater than zero, bucket and object repositories are wrapped in a metadata cache. The default budget is 512 MiB. Set the budget to `0` to disable cache wrappers.
 
-Cache invalidation is handled by repository wrappers and explicit multipart completion cache updates.
+Repository writes and multipart completion invalidate affected entries after their
+commit. In-flight cache misses publish only if the cache revision has not changed;
+otherwise they retry the database lookup. This prevents an older lookup from
+restoring metadata for a replaced or deleted backing file. Bucket invalidation
+also evicts its objects. Entries include checksum and user metadata sizes in their
+approximate memory accounting, and metadata maps are copied on cache access.
+The cache is process-local; writes through another process or direct database
+access do not notify it.
+
+Manual `BEGIN IMMEDIATE` transactions retain their connection through commit or
+rollback. Rollback uses a separate bounded cleanup context, so request cancellation
+cannot return an open transaction to the pool. A connection whose cleanup fails
+is discarded. These changes preserve SQLite's existing `synchronous(NORMAL)`
+power-loss durability policy.
+
+Legacy multipart rows whose checksum algorithm is NULL are read as having no
+selected algorithm, including rows already upgraded by migration 11.
 

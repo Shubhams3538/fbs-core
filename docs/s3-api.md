@@ -70,6 +70,18 @@ Multipart ETags use the standard MD5-of-part-MD5s format with a `-{part_count}` 
 
 Completion supports `If-Match` and `If-None-Match` against the current object. A failed condition returns `412 PreconditionFailed`, or `404 NoSuchKey` when `If-Match` names a missing key. The upload remains active with its parts intact, and the existing object is unchanged. Clients can abort the upload or retry completion once the condition is satisfied. Each retry checks the current object again; failed assembly files are discarded.
 
+## Destination Write Conditions
+
+PUT and CopyObject accept destination `If-Match` and `If-None-Match` conditions.
+The condition check and replacement occur in the same SQLite write transaction.
+A rejected condition returns `412 PreconditionFailed`; `If-Match` on a missing
+object returns `404 NoSuchKey`. A failed write discards its new backing file and
+preserves the existing object. The path returned by the transaction identifies
+the version actually replaced, so concurrent writes clean up the correct file.
+
+Delimited listings count Unicode characters consistently with SQLite and include
+the entire delimiter when forming a common prefix.
+
 ## Checksums
 
 Put object and upload part compute MD5 while streaming. The computed MD5 hex string is stored as the object or part ETag.
@@ -82,6 +94,7 @@ The server validates these request headers when present:
 - `x-amz-checksum-sha256`
 - `x-amz-checksum-crc32`
 - `x-amz-checksum-crc32c`
+- `x-amz-checksum-crc64nvme`
 
 Invalid digest encoding returns an S3 digest error. Checksum mismatch rejects the upload before metadata commit and deletes the new backing file.
 
