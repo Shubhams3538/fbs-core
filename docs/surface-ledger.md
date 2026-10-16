@@ -83,3 +83,11 @@ Target behavior: conditional completion failures preserve the upload and parts f
 | Documents | applies | `docs/s3-api.md`; `docs/storage-and-metadata.md` | Document conditional errors and retained upload state | Documentation review | proved |
 
 Production deployment, live AWS parity, and the full ceph compatibility suite were not tested for this fix. Client UI changes and device tests do not apply to this backend state correction.
+
+## Production correctness and test audit — 2026-10-16
+
+The scope, verified failures, proof commands, and remaining limits are recorded in
+[`code-quality-audit-2026-10-16.md`](code-quality-audit-2026-10-16.md).
+Request validation/authentication fixes are in #46; storage correctness is in #47;
+the final layer adds test isolation, meaningful behavioral assertions, management
+file separation, and repeatable mutation/compiled-server proof scripts.

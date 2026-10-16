@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/i-got-this-faa/fbs/internal/config"
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 )
 
@@ -160,6 +161,110 @@ func TestBootstrapRejectsNonLoopback(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("user count = %d, want 0", count)
+	}
+}
+
+func TestSetupRoutesRequireLoopbackPeer(t *testing.T) {
+	peers := []struct {
+		name, address string
+		allowed       bool
+	}{
+		{"IPv4 loopback", "127.0.0.1:12345", true},
+		{"IPv4 loopback subnet", "127.12.34.56:12345", true},
+		{"IPv6 loopback", "[::1]:12345", true},
+		{"IPv4 mapped loopback", "[::ffff:127.0.0.1]:12345", true},
+		{"bare IPv4 loopback", "127.0.0.1", true},
+		{"bare IPv6 loopback", "::1", true},
+		{"remote IPv4", "203.0.113.10:12345", false},
+		{"remote IPv6", "[2001:db8::1]:12345", false},
+		{"mapped remote IPv4", "[::ffff:203.0.113.10]:12345", false},
+		{"unspecified IPv4", "0.0.0.0:12345", false},
+		{"unspecified IPv6", "[::]:12345", false},
+		{"hostname", "localhost:12345", false},
+		{"empty peer", "", false},
+		{"malformed IPv6", "[::1", false},
+		{"malformed IPv4", "127.0.0.1:123:456", false},
+		{"hostname suffix", "127.0.0.1.example.test:12345", false},
+	}
+	for _, route := range []struct {
+		method, path string
+		success      int
+	}{
+		{http.MethodGet, "/api/setup/status", http.StatusOK},
+		{http.MethodPost, "/api/setup/bootstrap", http.StatusCreated},
+	} {
+		t.Run(route.path, func(t *testing.T) {
+			for _, peer := range peers {
+				t.Run(peer.name, func(t *testing.T) {
+					router, repo := newSetupTestEnv(t)
+					req := httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`))
+					req.RemoteAddr = peer.address
+					// Forwarded headers and Host never determine setup access.
+					req.Host = "localhost"
+					forwarded := "127.0.0.1"
+					if peer.allowed {
+						forwarded = "203.0.113.10"
+					}
+					req.Header.Set("X-Forwarded-For", forwarded)
+					req.Header.Set("X-Real-IP", forwarded)
+					req.Header.Set("Forwarded", "for="+forwarded+";host=localhost;proto=https")
+					rr := httptest.NewRecorder()
+					router.ServeHTTP(rr, req)
+					want := http.StatusForbidden
+					if peer.allowed {
+						want = route.success
+					}
+					if rr.Code != want {
+						t.Fatalf("status=%d, want %d; body=%s", rr.Code, want, rr.Body.String())
+					}
+					count, err := repo.UserCount(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantUsers := int64(0)
+					if peer.allowed && route.method == http.MethodPost {
+						wantUsers = 1
+					}
+					if count != wantUsers {
+						t.Errorf("user count=%d, want %d", count, wantUsers)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestBootstrapRejectsInvalidBodyWithoutCreatingUser(t *testing.T) {
+	for _, test := range []struct{ name, body string }{
+		{"unknown field", `{"role":"admin"}`},
+		{"second object", `{} {}`},
+		{"trailing garbage", `{}invalid`},
+		{"malformed JSON", `{"display_name":`},
+		{"oversized field", `{"display_name":"` + strings.Repeat("a", httpapi.MaxJSONBodyBytes) + `"}`},
+		{"oversized whitespace", `{}` + strings.Repeat(" ", httpapi.MaxJSONBodyBytes)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, contentLengthKnown := range []bool{true, false} {
+				router, repo := newSetupTestEnv(t)
+				req := httptest.NewRequest(http.MethodPost, "/api/setup/bootstrap", strings.NewReader(test.body))
+				req.RemoteAddr = "127.0.0.1:12345"
+				if !contentLengthKnown {
+					req.ContentLength = -1
+				}
+				rr := httptest.NewRecorder()
+				router.ServeHTTP(rr, req)
+				if rr.Code != http.StatusBadRequest {
+					t.Fatalf("known length=%v: status=%d, want 400", contentLengthKnown, rr.Code)
+				}
+				count, err := repo.UserCount(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if count != 0 {
+					t.Fatalf("invalid body created %d users", count)
+				}
+			}
+		})
 	}
 }
 
