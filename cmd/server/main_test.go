@@ -48,10 +48,6 @@ func buildServerBinaryWithTestEndpoints(t *testing.T) string {
 	return binPath
 }
 
-func TestBuildServerBinary(t *testing.T) {
-	buildServerBinary(t)
-}
-
 func TestServerGracefulShutdown(t *testing.T) {
 	binPath := buildServerBinary(t)
 

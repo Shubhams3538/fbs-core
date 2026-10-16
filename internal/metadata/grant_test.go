@@ -21,11 +21,7 @@ func uniqueTestUser(displayName string) *User {
 func TestGrantCreateAndList(t *testing.T) {
 	t.Parallel()
 
-	db, err := Open(t.TempDir() + "/grants.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	users := NewUserRepository(db)
@@ -89,11 +85,7 @@ func TestGrantCreateAndList(t *testing.T) {
 func newGrantBatchTestRepo(t *testing.T) (GrantRepository, *User, *User) {
 	t.Helper()
 
-	db, err := Open(t.TempDir() + "/grants-batch.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	users := NewUserRepository(db)
@@ -186,11 +178,7 @@ func TestGrantCreateIdempotentBatchRejectsNonGrantableAction(t *testing.T) {
 func TestGrantRejectsNonGrantableAction(t *testing.T) {
 	t.Parallel()
 
-	db, err := Open(t.TempDir() + "/grants-bad.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	users := NewUserRepository(db)
@@ -206,7 +194,7 @@ func TestGrantRejectsNonGrantableAction(t *testing.T) {
 		t.Fatalf("create bucket: %v", err)
 	}
 
-	err = NewGrantRepository(db).Create(ctx, &Grant{
+	err := NewGrantRepository(db).Create(ctx, &Grant{
 		ID: uuid.New().String(), BucketName: "b", GranteeUserID: grantee.ID,
 		Action: "s3:DeleteBucket", IsActive: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	})
@@ -218,11 +206,7 @@ func TestGrantRejectsNonGrantableAction(t *testing.T) {
 func TestGrantUpdateDuplicateActiveConflict(t *testing.T) {
 	t.Parallel()
 
-	db, err := Open(t.TempDir() + "/grants-dup.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	users := NewUserRepository(db)
@@ -266,11 +250,7 @@ func TestGrantUpdateDuplicateActiveConflict(t *testing.T) {
 func TestGrantCascadeOnBucketDelete(t *testing.T) {
 	t.Parallel()
 
-	db, err := Open(t.TempDir() + "/grants-cascade.db")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	ctx := context.Background()
 	users := NewUserRepository(db)

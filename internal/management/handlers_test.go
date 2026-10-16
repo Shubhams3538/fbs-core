@@ -716,33 +716,25 @@ func TestManagementPublicURLOmittedTTLUsesDefault(t *testing.T) {
 	}
 }
 
-func TestManagementPublicURLRejectsTTLGreaterThanMax(t *testing.T) {
+func TestManagementPublicURLRejectsTTLAboveMax(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Default()
 	cfg.PublicReadSigningSecret = "12345678901234567890123456789012"
 	cfg.PublicReadMaxTTL = time.Hour
 	env := newManagementTestEnvWithConfig(t, cfg)
-
-	resp := env.do(t, http.MethodPost, "/api/management/buckets/photos/objects/2026/image.jpg/public-url", env.adminToken, strings.NewReader(`{"expires_in_seconds":3601}`))
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
-	}
-}
-
-func TestManagementPublicURLRejectsTTLExceedingMax(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.Default()
-	cfg.PublicReadSigningSecret = "12345678901234567890123456789012"
-	cfg.PublicReadMaxTTL = 24 * time.Hour
-	env := newManagementTestEnvWithConfig(t, cfg)
-
-	resp := env.do(t, http.MethodPost, "/api/management/buckets/photos/objects/2026/image.jpg/public-url", env.adminToken, strings.NewReader(`{"expires_in_seconds":9223372036854775807}`))
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	for _, test := range []struct{ name, seconds string }{
+		{"one second above max", "3601"},
+		{"duration overflow", "9223372036854775807"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := `{"expires_in_seconds":` + test.seconds + `}`
+			resp := env.do(t, http.MethodPost, "/api/management/buckets/photos/objects/2026/image.jpg/public-url", env.adminToken, strings.NewReader(body))
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+		})
 	}
 }
 

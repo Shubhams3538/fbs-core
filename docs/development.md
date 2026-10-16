@@ -42,8 +42,47 @@ go test ./...
 CI also runs these lint checks. Run them before you push:
 
 ```bash
-go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tags testendpoints ./...
 go run golang.org/x/tools/cmd/deadcode@v0.50.0 -test ./...   # must print nothing
+```
+
+### Maintaining Tests
+
+Metadata repository tests use the package-local `openTestDB` helper, which calls
+the production `metadata.Open` with an isolated database in `t.TempDir()`. This
+runs real migrations and enables the production SQLite pragmas and foreign keys.
+Seed required users and buckets through repository helpers; do not copy table DDL
+into repository tests. Migration-specific upgrade fixtures belong in `migrations`.
+
+Authentication response tests pass errors through the real authenticator chain
+and middleware to the production responders in `cmd/server` and
+`internal/management`. Keep error propagation, status, challenge headers, response
+formats, and private-error redaction assertions there. Router tests cover routing, CORS,
+recovery, and preservation of the streaming interfaces.
+
+Use small, package-local fixture helpers to hide irrelevant setup. Keep the input
+that defines each scenario visible, especially malformed SigV4 requests. Combining
+tests into a table must preserve distinct boundaries: an ordinary TTL limit and
+integer overflow, for example, still need separate rows. Prefer checking behavior
+over comparing defaults to the same constants used to initialize them.
+
+Run the focused regression-sensitivity proof with Go and Python 3:
+
+```bash
+python3 scripts/verify-test-regressions.py
+```
+
+The script first checks that each focused test passes, then uses temporary Go
+overlays to reject five known regressions: a migration that rejects member users,
+a missing production `WWW-Authenticate` header, a rewritten middleware error,
+a masked SigV4 chain error, and an exposed internal auth error.
+It succeeds only when the intended test assertion catches each mutation, and it
+leaves source files unchanged. The normal suite must also pass:
+
+```bash
+go test ./... -count=1
+go test -race ./... -count=1
 ```
 
 ### External S3 compatibility suite (ceph/s3-tests)

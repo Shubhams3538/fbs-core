@@ -39,75 +39,33 @@ func TestChainAuthenticator_Fallback(t *testing.T) {
 	}
 }
 
-func TestChainAuthenticator_PreservesErrors(t *testing.T) {
+func TestChainAuthenticator_Errors(t *testing.T) {
 	t.Parallel()
 
-	chain := &ChainAuthenticator{
-		Authenticators: []Authenticator{
-			&BearerAuthenticator{},
-		},
+	tests := []struct {
+		name   string
+		header string
+		want   error
+	}{
+		{"missing_auth", "", ErrMissingAuth},
+		{"unsupported_scheme", "Basic dXNlcjpwYXNz", ErrUnsupportedScheme},
+		{"malformed_bearer", "Bearer malformed", ErrMalformedToken},
+		{"malformed_sigv4", "AWS4-HMAC-SHA256 Credential=bad,SignedHeaders=host,Signature=abc", ErrMalformedToken},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	_, err := chain.Authenticate(req)
-	if err != ErrMissingAuth {
-		t.Fatalf("expected ErrMissingAuth, got %v", err)
-	}
-}
-
-func TestChainAuthenticator_RealErrorFromBearer(t *testing.T) {
-	t.Parallel()
-
-	chain := &ChainAuthenticator{
-		Authenticators: []Authenticator{
-			&BearerAuthenticator{},
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer malformed")
-	_, err := chain.Authenticate(req)
-	if err != ErrMalformedToken {
-		t.Fatalf("expected ErrMalformedToken, got %v", err)
-	}
-}
-
-func TestChainAuthenticator_UnsupportedScheme(t *testing.T) {
-	t.Parallel()
-
-	chain := &ChainAuthenticator{
-		Authenticators: []Authenticator{
-			&BearerAuthenticator{},
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
-	_, err := chain.Authenticate(req)
-	if err != ErrUnsupportedScheme {
-		t.Fatalf("expected ErrUnsupportedScheme, got %v", err)
-	}
-}
-
-func TestChainAuthenticator_SigV4RequestWouldNotBeBlocked(t *testing.T) {
-	t.Parallel()
-
-	// Simulate a future Dev -> Bearer -> SigV4 chain
-	// A SigV4 request should NOT be blocked by Bearer returning ErrUnsupportedScheme
-	chain := &ChainAuthenticator{
-		Authenticators: []Authenticator{
-			&BearerAuthenticator{}, // returns ErrNotApplicable for non-Bearer
-			// In the future, SigV4Authenticator would go here
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=...")
-	_, err := chain.Authenticate(req)
-	// With only Bearer in the chain, no authenticator handles it,
-	// so the chain returns ErrUnsupportedScheme (not ErrMissingAuth)
-	if err != ErrUnsupportedScheme {
-		t.Fatalf("expected ErrUnsupportedScheme for unhandled scheme, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			chain := &ChainAuthenticator{Authenticators: []Authenticator{
+				&BearerAuthenticator{},
+				&SigV4Authenticator{},
+			}}
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", tt.header)
+			if _, err := chain.Authenticate(req); err != tt.want {
+				t.Fatalf("Authenticate() error = %v, want %v", err, tt.want)
+			}
+		})
 	}
 }
 
