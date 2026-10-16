@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/i-got-this-faa/fbs/internal/auth"
+	"github.com/i-got-this-faa/fbs/internal/iam"
 	"github.com/i-got-this-faa/fbs/internal/management"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 	"github.com/i-got-this-faa/fbs/internal/storage"
@@ -74,14 +76,16 @@ func TestManagementDeleteBucketCleansFilesAfterCommit(t *testing.T) {
 				disk.failPath = obj.StoragePath
 			}
 			h := &management.Handlers{
-				Buckets: cancelAfterBucketDelete{metadata.NewBucketRepository(env.db), cancel},
-				Objects: objects,
-				Storage: disk,
-				Logger:  slog.New(slog.NewTextHandler(env.logs, nil)),
+				Buckets:  cancelAfterBucketDelete{metadata.NewBucketRepository(env.db), cancel},
+				Objects:  objects,
+				Storage:  disk,
+				Activity: metadata.NewActivityRepository(env.db),
+				Logger:   slog.New(slog.NewTextHandler(env.logs, nil)),
 			}
 			route := chi.NewRouteContext()
 			route.URLParams.Add("bucket", "photos")
 			req := httptest.NewRequest(http.MethodDelete, "/api/management/buckets/photos", nil)
+			ctx = auth.WithPrincipal(ctx, auth.Principal{UserID: "owner", Role: iam.RoleAdmin})
 			req = req.WithContext(context.WithValue(ctx, chi.RouteCtxKey, route))
 			resp := httptest.NewRecorder()
 			h.DeleteBucket(resp, req)
@@ -94,6 +98,34 @@ func TestManagementDeleteBucketCleansFilesAfterCommit(t *testing.T) {
 			}
 			if ctx.Err() == nil {
 				t.Fatal("request was not canceled after commit")
+			}
+			activities, err := h.Activity.List(context.Background(), metadata.ActivityListFilter{BucketName: "photos", Limit: 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deletedKeys := make(map[string]bool)
+			forced := 0
+			for _, activity := range activities {
+				if activity.ActorUserID != "owner" {
+					t.Errorf("postcommit activity lost actor: %+v", activity)
+				}
+				switch activity.Action {
+				case metadata.ActivityDeleteObject:
+					deletedKeys[activity.ObjectKey] = true
+				case metadata.ActivityForceDeleteBucket:
+					forced++
+					if activity.Size != int64(len(before)) {
+						t.Errorf("force-delete activity count=%d, want %d", activity.Size, len(before))
+					}
+				}
+			}
+			if forced != 1 || len(deletedKeys) != len(before) {
+				t.Errorf("postcommit activity missing after cancellation: force=%d deleted=%v", forced, deletedKeys)
+			}
+			for _, obj := range before {
+				if !deletedKeys[obj.Key] {
+					t.Errorf("missing committed deletion activity for %q", obj.Key)
+				}
 			}
 			for _, obj := range before {
 				if disk.attempts[obj.StoragePath] != 1 {

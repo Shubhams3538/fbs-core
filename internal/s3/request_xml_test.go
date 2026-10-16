@@ -14,6 +14,7 @@ func TestDecodeXMLRequestFraming(t *testing.T) {
 		{"XML whitespace", " \r\n\t<Request/> \r\n\t", true},
 		{"declaration", `<?xml version="1.0" encoding="UTF-8"?><Request/>`, true},
 		{"BOM", "\xef\xbb\xbf<Request/>", true},
+		{"DOCTYPE before root", `<!DOCTYPE Request><Request/>`, true},
 		{"comments", `<!--before--><Request/><!--after-->`, true},
 		{"processing instructions", `<?before value?><Request/><?after value?>`, true},
 		{"namespace", `<Request xmlns="urn:example"><Value>ok</Value></Request>`, true},

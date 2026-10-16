@@ -44,7 +44,7 @@ The regression script requires each baseline test to pass and each source
 mutation to fail at the intended assertion. Compile errors do not count as
 proof. The HTTP script runs a normal compiled server with temporary data and
 prints no credentials; its SigV4 signer is independent of the Go implementation.
-The updated proof passes 32 mutation probes and 42 compiled-server HTTP
+The updated proof passes 33 mutation probes and 42 compiled-server HTTP
 outcomes. Full normal/race suites, vet, staticcheck in both build modes, normal
 and test-endpoint builds, module hygiene, and deadcode pass locally. The fresh
 dependency scan still reports zero reachable vulnerabilities (four findings are

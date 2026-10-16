@@ -112,9 +112,12 @@ CORS is configured globally with:
 Management and setup JSON requests accept at most 1 MiB and exactly one JSON
 value, with trailing whitespace allowed within that limit. Bucket creation XML
 is limited to 4 KiB. Multipart completion and multi-object deletion XML are
-limited to 2 MiB and must contain exactly one root element. XML comments,
+limited to 2 MiB. All three XML request types require exactly one root element
+when a document is present. XML comments,
 processing instructions, and whitespace outside that element are allowed; a
 second element or trailing text is rejected before bucket/object mutations.
+DOCTYPE directives are accepted only before the root, and rejected after it.
+Bucket creation also permits an empty body.
 Oversized control requests return HTTP 400 using their existing
 JSON or S3 error format. These limits apply to known-length and chunked bodies.
 Object and part upload streams retain their existing streaming behavior.

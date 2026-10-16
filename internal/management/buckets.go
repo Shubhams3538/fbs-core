@@ -13,7 +13,10 @@ import (
 	"github.com/i-got-this-faa/fbs/internal/objectops"
 )
 
-const bucketFileCleanupTimeout = 5 * time.Second
+const (
+	bucketFileCleanupTimeout = 5 * time.Second
+	bucketActivityTimeout    = 5 * time.Second
+)
 
 func (h *Handlers) ListBuckets(w http.ResponseWriter, r *http.Request) {
 	summaries, err := h.Management.ListBucketSummaries(r.Context())
@@ -70,10 +73,14 @@ func (h *Handlers) DeleteBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cleanupErr := h.deleteBucketFiles(r.Context(), objects)
+	// Audit the committed deletion even if the client disconnected during cleanup.
+	auditContext, cancelAudit := context.WithTimeout(context.WithoutCancel(r.Context()), bucketActivityTimeout)
+	defer cancelAudit()
+	auditRequest := r.WithContext(auditContext)
 	for _, obj := range objects {
-		h.recordActivity(r, metadata.ActivityDeleteObject, bucketName, obj.Key, obj.Size, obj.ETag)
+		h.recordActivity(auditRequest, metadata.ActivityDeleteObject, bucketName, obj.Key, obj.Size, obj.ETag)
 	}
-	h.recordActivity(r, metadata.ActivityForceDeleteBucket, bucketName, "", int64(len(objects)), "")
+	h.recordActivity(auditRequest, metadata.ActivityForceDeleteBucket, bucketName, "", int64(len(objects)), "")
 	if cleanupErr != nil {
 		h.internalError(w, r, "failed to delete bucket object files", cleanupErr)
 		return
@@ -90,13 +97,20 @@ func (h *Handlers) deleteBucketFiles(ctx context.Context, objects []metadata.Obj
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bucketFileCleanupTimeout)
 	defer cancel()
-	var cleanupErr error
+	var firstError error
+	failed := 0
 	for _, obj := range objects {
 		if err := h.Storage.Delete(ctx, obj.StoragePath); err != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete %s/%s: %w", obj.BucketName, obj.Key, err))
+			failed++
+			if firstError == nil {
+				firstError = fmt.Errorf("delete %s/%s: %w", obj.BucketName, obj.Key, err)
+			}
 		}
 	}
-	return cleanupErr
+	if firstError != nil {
+		return fmt.Errorf("failed to delete %d of %d bucket files (first failure): %w", failed, len(objects), firstError)
+	}
+	return nil
 }
 
 func (h *Handlers) EmptyBucket(w http.ResponseWriter, r *http.Request) {

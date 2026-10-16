@@ -46,6 +46,13 @@ def verify_regression(name, path, before, after, package, test, failure):
 
 def main():
     verify_regression(
+        "postcommit deletion audit survives cancellation", "internal/management/buckets.go",
+        "context.WithTimeout(context.WithoutCancel(r.Context()), bucketActivityTimeout)",
+        "context.WithTimeout(r.Context(), bucketActivityTimeout)",
+        "./internal/management", "^TestManagementDeleteBucketCleansFilesAfterCommit$",
+        "postcommit activity missing after cancellation",
+    )
+    verify_regression(
         "signed control body integrity", "internal/http/request_body.go",
         'expected != "" && expected != "UNSIGNED-PAYLOAD"', 'false',
         "./cmd/server", "^TestSignedManagementBodyIntegrity$", "status = 201, want 400",
