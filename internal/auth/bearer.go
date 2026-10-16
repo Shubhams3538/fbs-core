@@ -19,14 +19,13 @@ func (b *BearerAuthenticator) Authenticate(r *http.Request) (Principal, error) {
 	}
 
 	parts := strings.Fields(authHeader)
+	if len(parts) > 0 && !strings.EqualFold(parts[0], "Bearer") {
+		return Principal{}, ErrNotApplicable
+	}
 	if len(parts) != 2 {
 		return Principal{}, ErrMalformedToken
 	}
-	scheme, token := parts[0], parts[1]
-
-	if !strings.EqualFold(scheme, "Bearer") {
-		return Principal{}, ErrNotApplicable
-	}
+	token := parts[1]
 
 	accessKeyID, secret, found := strings.Cut(token, ".")
 	if !found || accessKeyID == "" || secret == "" {
