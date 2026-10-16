@@ -50,7 +50,7 @@ func TestChainAuthenticator_Errors(t *testing.T) {
 		{"missing_auth", "", ErrMissingAuth},
 		{"unsupported_scheme", "Basic dXNlcjpwYXNz", ErrUnsupportedScheme},
 		{"malformed_bearer", "Bearer malformed", ErrMalformedToken},
-		{"malformed_sigv4", "AWS4-HMAC-SHA256 Credential=bad, SignedHeaders=host, Signature=abc", ErrMalformedToken},
+		{"malformed_sigv4", "AWS4-HMAC-SHA256 Credential=bad,SignedHeaders=host,Signature=abc", ErrMalformedToken},
 	}
 
 	for _, tt := range tests {

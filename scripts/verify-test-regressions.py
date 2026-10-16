@@ -73,6 +73,15 @@ def main():
         "status = 401, want 500",
     )
     verify_regression(
+        "SigV4 chain error propagation",
+        "internal/auth/sigv4.go",
+        "return s.authenticateHeader(r)",
+        "return Principal{}, ErrInvalidCredentials",
+        "./internal/auth",
+        "^TestChainAuthenticator_Errors$/^malformed_sigv4$",
+        "want auth: malformed bearer token",
+    )
+    verify_regression(
         "private authentication error",
         "cmd/server/router.go",
         'map[string]string{"error": "auth failed"}',

@@ -74,9 +74,9 @@ python3 scripts/verify-test-regressions.py
 ```
 
 The script first checks that each focused test passes, then uses temporary Go
-overlays to reject four known regressions: a migration that rejects member users,
+overlays to reject five known regressions: a migration that rejects member users,
 a missing production `WWW-Authenticate` header, a rewritten middleware error,
-and an exposed internal auth error.
+a masked SigV4 chain error, and an exposed internal auth error.
 It succeeds only when the intended test assertion catches each mutation, and it
 leaves source files unchanged. The normal suite must also pass:
 
