@@ -13,6 +13,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from production_audit_cases import verify_listing_markers, verify_signed_payloads, verify_xml_mutations
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -87,6 +89,9 @@ def main():
                 expect("second JSON document rejected", request("POST", "/api/management/keys", b'{"display_name":"proof"} {}'), 400)
                 expect("oversized management body rejected", request("POST", "/api/management/keys", b'{"display_name":"' + b"x" * (1 << 20) + b'"}'), 400)
                 expect("chunked oversized bucket body rejected", request("PUT", "/oversized-bucket", iter([b" " * 4096, b"<CreateBucketConfiguration/>"])), 400)
+                verify_xml_mutations(request, expect)
+                verify_listing_markers(request, expect)
+                verify_signed_payloads(request, expect, address, setup["sigv4"])
                 member = json.loads(expect("create active member", request("POST", "/api/management/keys", b'{"display_name":"proof member","role":"member"}'), 201))
                 expect("active member authenticates", request("GET", "/api/management/grants/me", credential=member["bearer_token"]), 200)
                 expect("deactivate member", request("PATCH", "/api/management/keys/" + member["key"]["id"], b'{"is_active":false}'), 200)

@@ -25,6 +25,10 @@ type BucketRepository interface {
 	ListByNames(ctx context.Context, names []string) ([]Bucket, error)
 	UpdateOwner(ctx context.Context, name, ownerID string, expectedOwnerID string) error
 	Delete(ctx context.Context, name string) error
+	// DeleteWithObjects atomically removes a bucket and its objects, rejecting
+	// any multipart upload state with ErrBucketHasMultipartUploads. Returned
+	// objects identify backing files to clean up after the metadata commits.
+	DeleteWithObjects(ctx context.Context, name string) ([]Object, error)
 }
 
 // ErrBucketNotFound is returned when a bucket lookup yields no rows.

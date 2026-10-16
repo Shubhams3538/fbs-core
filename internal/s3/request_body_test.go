@@ -105,3 +105,55 @@ func TestDeleteObjectsRejectsTruncatedBodyBeforeDeletion(t *testing.T) {
 		t.Fatalf("invalid request deleted object: status=%d body=%q", get.Code, get.Body.String())
 	}
 }
+
+func TestXMLRequestsRejectInvalidFramingBeforeMutation(t *testing.T) {
+	for _, suffix := range []string{"<Extra/>", "trailing garbage"} {
+		t.Run("bucket/"+suffix, func(t *testing.T) {
+			env := newObjectTestEnv(t)
+			result := env.do(t, http.MethodPut, "/framing-bucket", createBucketConfigXML("us-east-1")+suffix, nil)
+			if result.Code != http.StatusBadRequest {
+				t.Errorf("malformed XML status=%d want 400", result.Code)
+			}
+			if _, err := env.buckets.GetByName(context.Background(), "framing-bucket"); !errors.Is(err, metadata.ErrBucketNotFound) {
+				t.Errorf("malformed XML created bucket: %v", err)
+			}
+		})
+		t.Run("delete/"+suffix, func(t *testing.T) {
+			env := newObjectTestEnv(t)
+			env.mustPut(t, "keep.txt", "original")
+			payload := `<Delete><Object><Key>keep.txt</Key></Object></Delete>` + suffix
+			sum := md5.Sum([]byte(payload))
+			result := env.do(t, http.MethodPost, "/"+env.bucket+"?delete", payload, map[string]string{"Content-MD5": base64.StdEncoding.EncodeToString(sum[:])})
+			if result.Code != http.StatusBadRequest {
+				t.Errorf("malformed XML status=%d want 400", result.Code)
+			}
+			get := env.do(t, http.MethodGet, "/"+env.bucket+"/keep.txt", "", nil)
+			if get.Code != http.StatusOK || get.Body.String() != "original" {
+				t.Errorf("malformed XML deleted original object: status=%d", get.Code)
+			}
+		})
+		t.Run("complete/"+suffix, func(t *testing.T) {
+			env := newObjectTestEnv(t)
+			env.mustPut(t, "destination", "original")
+			uploadID := env.mustCreateMultipartUpload(t, "destination")
+			path := fmt.Sprintf("/%s/destination?uploadId=%s", env.bucket, uploadID)
+			part := env.do(t, http.MethodPut, path+"&partNumber=1", "replacement", nil)
+			if part.Code != http.StatusOK {
+				t.Fatal("part failed", part.Code)
+			}
+			payload := fmt.Sprintf(`<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>%s</ETag></Part></CompleteMultipartUpload>`, part.Header().Get("ETag")) + suffix
+			result := env.do(t, http.MethodPost, path, payload, nil)
+			if result.Code != http.StatusBadRequest {
+				t.Errorf("malformed XML status=%d want 400", result.Code)
+			}
+			get := env.do(t, http.MethodGet, "/"+env.bucket+"/destination", "", nil)
+			if get.Code != http.StatusOK || get.Body.String() != "original" {
+				t.Error("malformed XML replaced original object")
+			}
+			upload, err := env.multipartUploads.GetByID(context.Background(), uploadID)
+			if err != nil || upload.Status != metadata.MultipartUploadStatusActive {
+				t.Errorf("malformed XML consumed upload: %+v %v", upload, err)
+			}
+		})
+	}
+}

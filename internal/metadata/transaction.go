@@ -31,7 +31,13 @@ func beginImmediate(ctx context.Context, db *sql.DB) (*immediateTransaction, err
 }
 
 func (tx *immediateTransaction) commit(ctx context.Context) error {
-	if _, err := tx.ExecContext(ctx, "COMMIT"); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Once COMMIT starts, cancellation must not turn a persisted write into an
+	// error that makes callers delete its backing file. A context timeout here
+	// has the same ambiguity; SQLite's busy_timeout bounds lock waits instead.
+	if _, err := tx.ExecContext(context.WithoutCancel(ctx), "COMMIT"); err != nil {
 		return err
 	}
 	tx.committed = true

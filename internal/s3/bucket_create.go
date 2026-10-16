@@ -136,8 +136,7 @@ func validateCreateBucketConfiguration(w http.ResponseWriter, r *http.Request) e
 	}
 
 	var config createBucketConfiguration
-	decoder := xml.NewDecoder(bytes.NewReader(payload))
-	if err := decoder.Decode(&config); err != nil {
+	if err := decodeXMLRequest(payload, &config); err != nil {
 		return err
 	}
 	if config.XMLName.Local != "CreateBucketConfiguration" {

@@ -731,7 +731,7 @@ func TestSigV4DeleteObjectsRequiresSignedDigestHeader(t *testing.T) {
 	req.Host = "localhost:9000"
 	req.Header.Set("Content-Type", "application/xml")
 	req.Header.Set("Content-MD5", base64MD5(body))
-	auth.SignRequest(req, env.sigv4.AccessKeyID, env.sigv4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-date"}, auth.EmptyStringHash)
+	auth.SignRequest(req, env.sigv4.AccessKeyID, env.sigv4.SecretKey, "us-east-1", "s3", []string{"host", "x-amz-date"}, hexSHA256(body))
 
 	rr := httptest.NewRecorder()
 	env.router.ServeHTTP(rr, req)
