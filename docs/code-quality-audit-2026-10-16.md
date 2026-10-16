@@ -7,7 +7,7 @@ Unicode listings. The fixes are split into reviewable layers:
 
 1. [#46 — request validation and authentication](https://github.com/i-got-this-faa/fbs-core/pull/46), based on #45.
 2. [#47 — storage and metadata correctness](https://github.com/i-got-this-faa/fbs-core/pull/47), based on #46.
-3. The test/refactor layer containing this report, based on #47.
+3. [#48 — test/refactor and CI proof](https://github.com/i-got-this-faa/fbs-core/pull/48), based on #47.
 
 Merge the stack from the bottom, starting with #45. These findings describe the
 reviewed code at `4c30f0d`; they are not a claim that every remaining defect has
@@ -91,8 +91,8 @@ The storage and test-debt findings were independently reproduced by Cier
 GPT-6.1 Sol high subagents. Their implementation tasks hit that account's usage
 limit after partial test/refactor edits; the parent completed the remaining work.
 The separate authorization review was rejected by the provider's content filter,
-so that area was reviewed by the parent. There was no completed independent
-post-fix review; do not count CodeRabbit's quota-skipped response as one.
+so that area was reviewed by the parent. At publication there was no completed independent post-fix review. Skipped bot
+reviews (quota limits or branch settings) do not constitute a review.
 
 - No power-loss tests, filesystem failure injection, full Ceph compatibility run,
   production deployment, or performance/load benchmark was performed.
