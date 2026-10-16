@@ -3,7 +3,6 @@ package management
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/i-got-this-faa/fbs/internal/auth"
 	"github.com/i-got-this-faa/fbs/internal/config"
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/iam"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 	"github.com/i-got-this-faa/fbs/internal/objectops"
@@ -277,12 +277,9 @@ func publicURLObjectKey(r *http.Request) (string, bool) {
 
 func (h *Handlers) publicReadOptions(w http.ResponseWriter, r *http.Request) (publicObjectURLRequest, time.Duration, bool) {
 	req := publicObjectURLRequest{}
-	if r.Body != nil {
-		decoder := json.NewDecoder(r.Body)
-		if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON body")
-			return publicObjectURLRequest{}, 0, false
-		}
+	if err := httpapi.DecodeJSONBody(w, r, &req, httpapi.JSONBodyOptions{AllowEmpty: true}); err != nil {
+		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON body")
+		return publicObjectURLRequest{}, 0, false
 	}
 
 	if req.ResponseContentDisposition != "" {
@@ -564,8 +561,7 @@ type createKeyInput struct {
 
 func decodeCreateKeyRequest(w http.ResponseWriter, r *http.Request) (createKeyInput, bool) {
 	var rawFields map[string]json.RawMessage
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&rawFields); err != nil {
+	if err := httpapi.DecodeJSONBody(w, r, &rawFields, httpapi.JSONBodyOptions{}); err != nil {
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON request body")
 		return createKeyInput{}, false
 	}
@@ -626,8 +622,7 @@ type patchKeyInput struct {
 
 func decodePatchKeyRequest(w http.ResponseWriter, r *http.Request) (patchKeyInput, bool) {
 	var rawFields map[string]json.RawMessage
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&rawFields); err != nil {
+	if err := httpapi.DecodeJSONBody(w, r, &rawFields, httpapi.JSONBodyOptions{}); err != nil {
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON request body")
 		return patchKeyInput{}, false
 	}

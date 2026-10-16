@@ -8,10 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/iam"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 )
@@ -59,7 +59,7 @@ func (h *ObjectHandlers) DeleteObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := parseDeleteObjectsRequest(r)
+	req, err := parseDeleteObjectsRequest(w, r)
 	if err != nil {
 		status := http.StatusBadRequest
 		code := codeMalformedXML
@@ -131,10 +131,8 @@ var errTooManyDeleteObjects = errors.New("too many delete objects")
 var errMissingDeleteDigest = errors.New("missing delete object digest")
 var errUnsignedDeleteDigest = errors.New("unsigned delete object digest")
 
-func parseDeleteObjectsRequest(r *http.Request) (deleteObjectsRequest, error) {
-	defer r.Body.Close()
-
-	payload, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+func parseDeleteObjectsRequest(w http.ResponseWriter, r *http.Request) (deleteObjectsRequest, error) {
+	payload, err := httpapi.ReadBody(w, r, 2<<20)
 	if err != nil {
 		return deleteObjectsRequest{}, err
 	}

@@ -1,7 +1,6 @@
 package management
 
 import (
-	"encoding/json"
 	"errors"
 	"mime"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/i-got-this-faa/fbs/internal/auth"
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 	"github.com/i-got-this-faa/fbs/internal/sharelink"
 )
@@ -168,7 +168,7 @@ func (h *Handlers) shareLinkCreatorID(w http.ResponseWriter, r *http.Request) (s
 
 func decodeCreateShareLinkRequest(w http.ResponseWriter, r *http.Request) (createShareLinkRequest, time.Duration, bool) {
 	var req createShareLinkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httpapi.DecodeJSONBody(w, r, &req, httpapi.JSONBodyOptions{}); err != nil {
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON body")
 		return createShareLinkRequest{}, 0, false
 	}
