@@ -55,9 +55,10 @@ runs real migrations and enables the production SQLite pragmas and foreign keys.
 Seed required users and buckets through repository helpers; do not copy table DDL
 into repository tests. Migration-specific upgrade fixtures belong in `migrations`.
 
-Authentication response tests call the production responders in `cmd/server` and
-`internal/management`. Keep status, challenge headers, response formats, and
-private-error redaction assertions there. Router tests cover routing, CORS,
+Authentication response tests pass errors through the real authenticator chain
+and middleware to the production responders in `cmd/server` and
+`internal/management`. Keep error propagation, status, challenge headers, response
+formats, and private-error redaction assertions there. Router tests cover routing, CORS,
 recovery, and preservation of the streaming interfaces.
 
 Use small, package-local fixture helpers to hide irrelevant setup. Keep the input
@@ -73,8 +74,9 @@ python3 scripts/verify-test-regressions.py
 ```
 
 The script first checks that each focused test passes, then uses temporary Go
-overlays to reject three known regressions: a migration that rejects member users,
-a missing production `WWW-Authenticate` header, and an exposed internal auth error.
+overlays to reject four known regressions: a migration that rejects member users,
+a missing production `WWW-Authenticate` header, a rewritten middleware error,
+and an exposed internal auth error.
 It succeeds only when the intended test assertion catches each mutation, and it
 leaves source files unchanged. The normal suite must also pass:
 

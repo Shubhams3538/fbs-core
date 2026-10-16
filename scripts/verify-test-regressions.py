@@ -64,6 +64,15 @@ def main():
         "WWW-Authenticate",
     )
     verify_regression(
+        "middleware authentication error propagation",
+        "internal/auth/middleware.go",
+        "\t\t\t\tonError(w, r, err)\n",
+        "\t\t\t\tonError(w, r, ErrMissingAuth)\n",
+        "./cmd/server",
+        "^TestAuthErrorResponses$/^debug_JSON$/^internal$",
+        "status = 401, want 500",
+    )
+    verify_regression(
         "private authentication error",
         "cmd/server/router.go",
         'map[string]string{"error": "auth failed"}',

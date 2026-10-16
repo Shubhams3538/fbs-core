@@ -14,6 +14,14 @@ import (
 	"github.com/i-got-this-faa/fbs/internal/management"
 )
 
+type errorAuthenticator struct {
+	err error
+}
+
+func (authenticator errorAuthenticator) Authenticate(*http.Request) (auth.Principal, error) {
+	return auth.Principal{}, authenticator.err
+}
+
 func TestAuthErrorResponses(t *testing.T) {
 	t.Parallel()
 
@@ -46,7 +54,13 @@ func TestAuthErrorResponses(t *testing.T) {
 					const privateCause = "database password=do-not-expose"
 					request := httptest.NewRequest(http.MethodGet, "/protected", nil)
 					recorder := httptest.NewRecorder()
-					responder.respond(recorder, request, fmt.Errorf("%w: %s", test.err, privateCause))
+					authenticator := &auth.ChainAuthenticator{Authenticators: []auth.Authenticator{
+						errorAuthenticator{err: fmt.Errorf("%w: %s", test.err, privateCause)},
+					}}
+					handler := auth.RequireAuthentication(authenticator, responder.respond)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+						t.Fatal("authentication failure reached the protected handler")
+					}))
+					handler.ServeHTTP(recorder, request)
 					if recorder.Code != test.status {
 						t.Fatalf("status = %d, want %d", recorder.Code, test.status)
 					}
