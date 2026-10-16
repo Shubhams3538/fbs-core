@@ -227,3 +227,12 @@ func (r *countingObjectRepository) DeleteAllInBucket(_ context.Context, bucketNa
 	}
 	return nil
 }
+
+func (r *countingObjectRepository) Replace(ctx context.Context, object *Object, ifMatch, ifNoneMatch string) (string, error) {
+	old, ok := r.objects[objectCacheMapKey(object.BucketName, object.Key)]
+	version := objectVersion{exists: ok, etag: old.ETag, storagePath: old.StoragePath}
+	if err := checkWritePreconditions(version, ifMatch, ifNoneMatch); err != nil {
+		return "", err
+	}
+	return old.StoragePath, r.Create(ctx, object)
+}

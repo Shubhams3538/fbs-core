@@ -3,6 +3,7 @@ package metadata
 import (
 	"container/list"
 	"context"
+	"maps"
 	"sync"
 )
 
@@ -35,6 +36,7 @@ type cacheEntry struct {
 
 type MetadataCache struct {
 	mu       sync.Mutex
+	revision uint64
 	maxBytes int64
 	used     int64
 	lru      *list.List
@@ -117,6 +119,7 @@ func (c *MetadataCache) evictBucket(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.revision++
 	c.removeLocked(bucketKey(name))
 	for key := range c.entries {
 		if key.kind == cacheKindObject && key.bucketName == name {
@@ -132,6 +135,7 @@ func (c *MetadataCache) evictObject(bucketName, key string) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.revision++
 	c.removeLocked(objectKey(bucketName, key))
 }
 
@@ -143,6 +147,7 @@ func (c *MetadataCache) evictObjectsInBucket(bucketName string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.revision++
 	for key := range c.entries {
 		if key.kind == cacheKindObject && key.bucketName == bucketName {
 			c.removeLocked(key)
@@ -153,7 +158,10 @@ func (c *MetadataCache) evictObjectsInBucket(bucketName string) {
 func (c *MetadataCache) put(entry cacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.putLocked(entry)
+}
 
+func (c *MetadataCache) putLocked(entry cacheEntry) {
 	if existing, ok := c.entries[entry.key]; ok {
 		c.removeElementLocked(existing)
 	}
@@ -202,7 +210,14 @@ func estimateBucketSize(bucket *Bucket) int64 {
 }
 
 func estimateObjectSize(object *Object) int64 {
-	return objectCacheOverhead + int64(len(object.ID)+len(object.BucketName)+len(object.Key)+len(object.ETag)+len(object.ContentType)+len(object.StoragePath))
+	size := objectCacheOverhead + int64(len(object.ID)+len(object.BucketName)+len(object.Key)+len(object.ETag)+len(object.ContentType)+len(object.StoragePath)+len(object.ChecksumCRC32)+len(object.ChecksumCRC32C)+len(object.ChecksumCRC64NVME)+len(object.ChecksumSHA1)+len(object.ChecksumSHA256))
+	if object.UserMetadata != nil {
+		size += 64 // map header and initial allocation
+	}
+	for key, value := range object.UserMetadata {
+		size += 64 + int64(len(key)+len(value)) // string headers and map slots
+	}
+	return size
 }
 
 func cloneBucket(bucket *Bucket) *Bucket {
@@ -218,6 +233,7 @@ func cloneObject(object *Object) *Object {
 		return nil
 	}
 	copied := *object
+	copied.UserMetadata = maps.Clone(object.UserMetadata)
 	return &copied
 }
 
@@ -231,24 +247,30 @@ func NewCachedBucketRepository(delegate BucketRepository, cache *MetadataCache) 
 }
 
 func (r *cachedBucketRepository) Create(ctx context.Context, bucket *Bucket) error {
+	defer r.cache.evictBucket(bucket.Name)
 	if err := r.delegate.Create(ctx, bucket); err != nil {
 		return err
 	}
-	r.cache.putBucket(bucket)
 	return nil
 }
 
 func (r *cachedBucketRepository) GetByName(ctx context.Context, name string) (*Bucket, error) {
-	if bucket, ok := r.cache.getBucket(name); ok {
-		return bucket, nil
+	for {
+		revision := r.cache.currentRevision()
+		if bucket, ok := r.cache.getBucket(name); ok {
+			return bucket, nil
+		}
+		bucket, err := r.delegate.GetByName(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if r.cache.publishBucket(bucket, revision) {
+			return cloneBucket(bucket), nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
-
-	bucket, err := r.delegate.GetByName(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	r.cache.putBucket(bucket)
-	return cloneBucket(bucket), nil
 }
 
 func (r *cachedBucketRepository) List(ctx context.Context) ([]Bucket, error) {
@@ -264,18 +286,18 @@ func (r *cachedBucketRepository) ListByNames(ctx context.Context, names []string
 }
 
 func (r *cachedBucketRepository) UpdateOwner(ctx context.Context, name, ownerID string, expectedOwnerID string) error {
+	defer r.cache.evictBucket(name)
 	if err := r.delegate.UpdateOwner(ctx, name, ownerID, expectedOwnerID); err != nil {
 		return err
 	}
-	r.cache.evictBucket(name)
 	return nil
 }
 
 func (r *cachedBucketRepository) Delete(ctx context.Context, name string) error {
+	defer r.cache.evictBucket(name)
 	if err := r.delegate.Delete(ctx, name); err != nil {
 		return err
 	}
-	r.cache.evictBucket(name)
 	return nil
 }
 
@@ -288,33 +310,39 @@ func NewCachedObjectRepository(delegate ObjectRepository, cache *MetadataCache) 
 	return &cachedObjectRepository{delegate: delegate, cache: cache}
 }
 
-func PutObjectInCache(repo ObjectRepository, object *Object) {
-	cached, ok := repo.(*cachedObjectRepository)
-	if !ok {
-		return
+// InvalidateObjectCache refreshes reads after a write committed outside the wrapper,
+// such as multipart completion. Publishing the caller's row could race a later write.
+func InvalidateObjectCache(repo ObjectRepository, bucketName, key string) {
+	if cached, ok := repo.(*cachedObjectRepository); ok {
+		cached.cache.evictObject(bucketName, key)
 	}
-	cached.cache.putObject(object)
 }
 
 func (r *cachedObjectRepository) Create(ctx context.Context, object *Object) error {
+	defer r.cache.evictObject(object.BucketName, object.Key)
 	if err := r.delegate.Create(ctx, object); err != nil {
 		return err
 	}
-	r.cache.putObject(object)
 	return nil
 }
 
 func (r *cachedObjectRepository) GetByKey(ctx context.Context, bucketName, key string) (*Object, error) {
-	if object, ok := r.cache.getObject(bucketName, key); ok {
-		return object, nil
+	for {
+		revision := r.cache.currentRevision()
+		if object, ok := r.cache.getObject(bucketName, key); ok {
+			return object, nil
+		}
+		object, err := r.delegate.GetByKey(ctx, bucketName, key)
+		if err != nil {
+			return nil, err
+		}
+		if r.cache.publishObject(object, revision) {
+			return cloneObject(object), nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
-
-	object, err := r.delegate.GetByKey(ctx, bucketName, key)
-	if err != nil {
-		return nil, err
-	}
-	r.cache.putObject(object)
-	return cloneObject(object), nil
 }
 
 func (r *cachedObjectRepository) List(ctx context.Context, bucketName, prefix, startAfter string, maxKeys int) ([]Object, bool, error) {
@@ -326,17 +354,17 @@ func (r *cachedObjectRepository) ListDelimited(ctx context.Context, bucketName, 
 }
 
 func (r *cachedObjectRepository) Delete(ctx context.Context, bucketName, key string) error {
+	defer r.cache.evictObject(bucketName, key)
 	if err := r.delegate.Delete(ctx, bucketName, key); err != nil {
 		return err
 	}
-	r.cache.evictObject(bucketName, key)
 	return nil
 }
 
 func (r *cachedObjectRepository) DeleteAllInBucket(ctx context.Context, bucketName string) error {
+	defer r.cache.evictObjectsInBucket(bucketName)
 	if err := r.delegate.DeleteAllInBucket(ctx, bucketName); err != nil {
 		return err
 	}
-	r.cache.evictObjectsInBucket(bucketName)
 	return nil
 }

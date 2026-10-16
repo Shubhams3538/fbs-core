@@ -84,22 +84,11 @@ func (r *sqliteUserRepository) Create(ctx context.Context, user *User) error {
 }
 
 func (r *sqliteUserRepository) CreateFirstUser(ctx context.Context, user *User) error {
-	conn, err := r.db.Conn(ctx)
+	conn, err := beginImmediate(ctx, r.db)
 	if err != nil {
 		return fmt.Errorf("create first user conn: %w", err)
 	}
-	defer conn.Close()
-
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("create first user begin: %w", err)
-	}
-
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
-		}
-	}()
+	defer conn.close()
 
 	var count int64
 	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
@@ -113,10 +102,9 @@ func (r *sqliteUserRepository) CreateFirstUser(ctx context.Context, user *User) 
 		return fmt.Errorf("create first user insert: %w", err)
 	}
 
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+	if err := conn.commit(ctx); err != nil {
 		return fmt.Errorf("create first user commit: %w", err)
 	}
-	committed = true
 
 	return nil
 }

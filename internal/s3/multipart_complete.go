@@ -81,7 +81,7 @@ func (h *ObjectHandlers) CompleteMultipartUpload(w http.ResponseWriter, r *http.
 	}
 	claim.settle()
 
-	metadata.PutObjectInCache(h.Objects, obj)
+	metadata.InvalidateObjectCache(h.Objects, obj.BucketName, obj.Key)
 	h.recordActivity(r, metadata.ActivityCompleteMultipartUpload, bucketName, key, obj.Size, obj.ETag)
 	if replacedPath != "" && replacedPath != obj.StoragePath {
 		h.deleteStoredFile(replacedPath, "delete old object backing file after multipart complete", bucketName, key)

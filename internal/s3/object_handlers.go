@@ -114,16 +114,6 @@ func (h *ObjectHandlers) PutObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Load the existing object before writing so we know whether this is an
-	// overwrite. Write always creates a new unique UUID path, so the old file
-	// is untouched until metadata commit succeeds.
-	oldObj, err := h.Objects.GetByKey(r.Context(), bucketName, key)
-	if err != nil && !errors.Is(err, metadata.ErrObjectNotFound) {
-		h.logError("load existing object before put", err, bucketName, key, "")
-		WriteS3Error(w, r, http.StatusInternalServerError, codeInternalError, messageInternalError)
-		return
-	}
-
 	storagePath, size, err := h.Storage.Write(r.Context(), bucketName, key, pipeline.Reader(r.Body))
 	if err != nil {
 		h.writeStorageMutationError(w, r, err, bucketName, key, "")
@@ -160,20 +150,19 @@ func (h *ObjectHandlers) PutObject(w http.ResponseWriter, r *http.Request) {
 		ChecksumSHA256:    cs["x-amz-checksum-sha256"],
 	}
 
-	if err := h.Objects.Create(r.Context(), obj); err != nil {
+	replacedPath, err := h.Objects.Replace(r.Context(), obj, r.Header.Get("If-Match"), r.Header.Get("If-None-Match"))
+	if err != nil {
 		h.logError("create object metadata", err, bucketName, key, storagePath)
 		// Write always creates a new unique file, so on metadata failure we must
 		// clean it up regardless of whether this is an overwrite.
-		_ = h.Storage.Delete(r.Context(), storagePath)
-		WriteS3Error(w, r, http.StatusInternalServerError, codeInternalError, messageInternalError)
+		h.deleteStoredFile(storagePath, "discard failed object write", bucketName, key)
+		h.writeObjectReplaceError(w, r, err)
 		return
 	}
 	h.recordActivity(r, metadata.ActivityPutObject, bucketName, key, size, obj.ETag)
 
-	if oldObj != nil && oldObj.StoragePath != storagePath {
-		if err := h.Storage.Delete(r.Context(), oldObj.StoragePath); err != nil {
-			h.logError("delete old object backing file after put", err, bucketName, key, oldObj.StoragePath)
-		}
+	if replacedPath != "" && replacedPath != storagePath {
+		h.deleteStoredFile(replacedPath, "delete old object backing file after put", bucketName, key)
 	}
 
 	w.Header().Set("ETag", quoteETag(obj.ETag))
