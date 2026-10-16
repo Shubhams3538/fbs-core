@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/iam"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 )
@@ -39,7 +40,12 @@ func (h *ObjectHandlers) CompleteMultipartUpload(w http.ResponseWriter, r *http.
 	defer claim.release()
 
 	var req CompleteMultipartUpload
-	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+	payload, err := httpapi.ReadBody(w, r, 2<<20)
+	if err != nil {
+		WriteS3Error(w, r, http.StatusBadRequest, codeMalformedXML, messageMalformedXML)
+		return
+	}
+	if err := xml.Unmarshal(payload, &req); err != nil {
 		WriteS3Error(w, r, http.StatusBadRequest, codeMalformedXML, messageMalformedXML)
 		return
 	}

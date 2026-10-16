@@ -1,9 +1,7 @@
 package setup
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -11,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/i-got-this-faa/fbs/internal/auth"
 	"github.com/i-got-this-faa/fbs/internal/config"
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 	"github.com/i-got-this-faa/fbs/internal/s3compat"
 )
@@ -98,22 +97,8 @@ func (h *Handlers) bootstrapRequired(w http.ResponseWriter, r *http.Request) (bo
 
 func decodeBootstrapRequest(w http.ResponseWriter, r *http.Request) (bootstrapRequest, bool) {
 	var req bootstrapRequest
-	if r.Body == nil {
-		return req, true
-	}
-
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		if errors.Is(err, io.EOF) {
-			return req, true
-		}
-		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON body")
-		return bootstrapRequest{}, false
-	}
-
-	var extra json.RawMessage
-	if err := decoder.Decode(&extra); err != io.EOF {
+	options := httpapi.JSONBodyOptions{AllowEmpty: true, RejectUnknownFields: true}
+	if err := httpapi.DecodeJSONBody(w, r, &req, options); err != nil {
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON body")
 		return bootstrapRequest{}, false
 	}

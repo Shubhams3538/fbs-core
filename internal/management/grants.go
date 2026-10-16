@@ -3,7 +3,6 @@ package management
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/i-got-this-faa/fbs/internal/auth"
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/iam"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 	"github.com/i-got-this-faa/fbs/internal/storage"
@@ -289,8 +289,7 @@ func (h *Handlers) TransferBucketOwnership(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req transferOwnershipRequest
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := httpapi.DecodeJSONBody(w, r, &req, httpapi.JSONBodyOptions{AllowEmpty: true}); err != nil {
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON request body")
 		return
 	}
@@ -447,8 +446,7 @@ func decodeCreateGrantRequest(w http.ResponseWriter, r *http.Request) (createGra
 		KeyPrefix          string   `json:"key_prefix"`
 		Note               string   `json:"note"`
 	}
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&raw); err != nil {
+	if err := httpapi.DecodeJSONBody(w, r, &raw, httpapi.JSONBodyOptions{}); err != nil {
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON request body")
 		return createGrantInput{}, false
 	}
@@ -490,8 +488,7 @@ type patchGrantInput struct {
 
 func decodePatchGrantRequest(w http.ResponseWriter, r *http.Request) (patchGrantInput, bool) {
 	var rawFields map[string]json.RawMessage
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&rawFields); err != nil {
+	if err := httpapi.DecodeJSONBody(w, r, &rawFields, httpapi.JSONBodyOptions{}); err != nil {
 		writeError(w, http.StatusBadRequest, errorCodeInvalidRequest, "invalid JSON request body")
 		return patchGrantInput{}, false
 	}

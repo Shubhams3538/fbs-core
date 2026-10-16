@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"strings"
 
 	"github.com/i-got-this-faa/fbs/internal/auth"
+	httpapi "github.com/i-got-this-faa/fbs/internal/http"
 	"github.com/i-got-this-faa/fbs/internal/metadata"
 	"github.com/i-got-this-faa/fbs/internal/s3compat"
 )
@@ -26,7 +26,7 @@ func (h *ObjectHandlers) CreateBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validateCreateBucketConfiguration(r.Body); err != nil {
+	if err := validateCreateBucketConfiguration(w, r); err != nil {
 		switch {
 		case errors.Is(err, errInvalidLocationConstraint):
 			WriteS3Error(w, r, http.StatusBadRequest, codeInvalidLocationConstraint, messageInvalidLocationConstraint)
@@ -126,10 +126,8 @@ func (h *ObjectHandlers) bucketOwnerID(r *http.Request, principal auth.Principal
 
 var errInvalidLocationConstraint = errors.New("invalid location constraint")
 
-func validateCreateBucketConfiguration(body io.ReadCloser) error {
-	defer body.Close()
-
-	payload, err := io.ReadAll(body)
+func validateCreateBucketConfiguration(w http.ResponseWriter, r *http.Request) error {
+	payload, err := httpapi.ReadBody(w, r, 4<<10)
 	if err != nil {
 		return err
 	}
